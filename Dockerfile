@@ -36,19 +36,19 @@ RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制 backend 的 package.json（用于安装生产依赖）
+# 复制 backend 的 package.json（用于安装依赖）
 COPY --from=builder /app/backend/package*.json ./backend/
 
 # 复制构建产物
 COPY --from=builder /app/backend/dist ./backend/dist
 
-# 复制根目录的 workspace 配置（如果需要）
+# 复制根目录配置
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 
-# 在最终镜像中安装生产依赖（包括 reflect-metadata）
+# 在生产阶段安装所有依赖（包括 reflect-metadata，确保被正确安装）
 WORKDIR /app/backend
-RUN pnpm install --prod
+RUN pnpm install
 
 EXPOSE 3333
 
