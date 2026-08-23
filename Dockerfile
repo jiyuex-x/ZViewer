@@ -1,23 +1,23 @@
 # 构建阶段
 FROM node:20-alpine AS builder
 
-# 安装系统依赖（ffmpeg 用于流处理）
-RUN apk add --no-cache ffmpeg
+# 安装系统依赖（ffmpeg）和 pnpm
+RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制后端依赖文件
-COPY backend/package*.json ./backend/
+# 复制后端所有文件（包括 package.json, tsconfig.json, src/ 等）
+COPY backend/ ./backend/
+
 WORKDIR /app/backend
-RUN npm ci
 
-# 复制后端源码
-COPY backend/ ./
+# 使用 pnpm 安装依赖（会自动生成 pnpm-lock.yaml 或使用已有的）
+RUN pnpm install
 
-# 构建 TypeScript（编译到 dist/）
-RUN npm run build
+# 构建 TypeScript（输出到 dist/）
+RUN pnpm run build
 
-# 复制所有 .json 资源文件到 dist 对应路径（因为 tsc 不会复制非 .ts 文件）
+# 复制 .json 等资源文件到 dist 对应位置（tsc 不会复制它们）
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
 # ------------------------------
@@ -32,7 +32,7 @@ WORKDIR /app
 COPY --from=builder /app/backend/dist ./dist
 COPY --from=builder /app/backend/node_modules ./node_modules
 
-# 暴露后端端口（默认 3333）
+# 暴露端口（后端默认 3333）
 EXPOSE 3333
 
 # 启动后端
