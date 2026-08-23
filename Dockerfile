@@ -32,7 +32,8 @@ RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 di
 # 生产阶段
 FROM node:20-alpine
 
-RUN apk add --no-cache ffmpeg
+# 安装 ffmpeg 和 pnpm（pnpm 用于安装生产依赖）
+RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
