@@ -13,13 +13,15 @@ WORKDIR /app/backend
 
 RUN pnpm install
 
-# 安装缺失的类型声明（cors 需要 @types/cors）
-RUN pnpm add -D @types/cors
+# 显式安装缺失的依赖（htmlparser2、dom-serializer 及其类型）
+RUN pnpm add -D @types/cors htmlparser2 dom-serializer
 
 RUN node scripts/clean-dist.js 2>/dev/null || true
 
+# 编译 TypeScript（忽略类型错误，强制生成 JS）
 RUN ./node_modules/.bin/tsc --noEmitOnError false --skipLibCheck --strict false --noImplicitAny false
 
+# 复制 .json 资源文件
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
 # 生产阶段
