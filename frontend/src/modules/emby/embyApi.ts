@@ -141,6 +141,9 @@ export async function resolveEmby(
     directUrl?: string
     format?: MediaFormat
     duration?: number
+    audioCodec?: string | null
+    needsAudioTranscode?: boolean
+    audioTranscodeDisabled?: boolean
   }
   if (!res.ok || !data.success || !data.videoUrl) {
     throw new Error(data.message || '解析 Emby 条目失败')
@@ -151,6 +154,9 @@ export async function resolveEmby(
     directUrl: data.directUrl,
     format: data.format || 'mp4',
     duration: data.duration ?? 0,
+    audioCodec: data.audioCodec ?? null,
+    needsAudioTranscode: data.needsAudioTranscode === true,
+    audioTranscodeDisabled: data.audioTranscodeDisabled === true,
   }
 }
 

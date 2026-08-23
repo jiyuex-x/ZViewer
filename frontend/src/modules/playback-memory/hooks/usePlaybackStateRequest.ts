@@ -62,6 +62,8 @@ export function usePlaybackStateRequest({
   // 服务器暂无播放状态时的重试（房主可能刚开始播放 / 状态尚未持久化）
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 缓冲模式下载的取消控制器：卸载/房间切换时中断下载，避免孤儿任务占用带宽
+  const downloadAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (!socket || isHostRef.current) return
@@ -98,6 +100,16 @@ export function usePlaybackStateRequest({
           const video = videoRef.current
           if (!video) return
 
+          const downloadController = new AbortController()
+          downloadAbortRef.current = downloadController
+
+          // attach 开始前即标记 sourceUrl 已应用：消除 useViewerStateSync 在
+          // attach 进行中收到同源 state 时误判 isSourceChange 并发起第二个
+          // attach 的竞态窗口（两个并发 attach 互相 reset → 黑屏）。
+          // 失败时回滚，允许下一次重试。
+          const previousAppliedUrl = lastAppliedSourceUrlRef.current
+          lastAppliedSourceUrlRef.current = state.sourceUrl
+
           suppressEventsRef.current = true
           setWatchTogether(state)
 
@@ -117,6 +129,7 @@ export function usePlaybackStateRequest({
                 state,
                 title: state.previewTitle,
                 onProgress: (p) => setBufferProgress(p),
+                signal: downloadController.signal,
               })
               return {
                 videoBlob: result.videoBlob,
@@ -142,7 +155,8 @@ export function usePlaybackStateRequest({
           void (async () => {
             const blobs = await fetchBlobsIfNeeded()
             if (blobs === null) {
-              // 缓冲失败：不应用源，等待房主重新广播
+              // 缓冲失败：不应用源，回滚 sourceUrl 标记，等待房主重新广播
+              lastAppliedSourceUrlRef.current = previousAppliedUrl
               suppressEventsRef.current = false
               return
             }
@@ -159,9 +173,7 @@ export function usePlaybackStateRequest({
             const currentVideo = videoRef.current
             if (!currentVideo) return
 
-            // 标记 sourceUrl 已应用，避免后续 useViewerStateSync 收到同 sourceUrl 的 state
-            // 时误判为 source 变化，重复触发 applySourceToVideo 覆盖已缓冲的 blob 源
-            lastAppliedSourceUrlRef.current = state.sourceUrl
+            // sourceUrl 已在 attach 前标记，此处无需重复写入
 
             // 设置进度
             if (state.currentTime > 0) {
@@ -187,6 +199,8 @@ export function usePlaybackStateRequest({
             suppressEventsRef.current = false
           })().catch((err: unknown) => {
             console.error('[usePlaybackStateRequest] 恢复状态失败:', err)
+            // attach 失败：回滚 sourceUrl 标记，允许下一次重试
+            lastAppliedSourceUrlRef.current = previousAppliedUrl
             suppressEventsRef.current = false
             message.error(err instanceof Error ? err.message : '状态恢复失败')
           })
@@ -201,6 +215,8 @@ export function usePlaybackStateRequest({
         clearTimeout(retryTimerRef.current)
         retryTimerRef.current = null
       }
+      downloadAbortRef.current?.abort()
+      downloadAbortRef.current = null
     }
   }, [
     socket,

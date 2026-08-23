@@ -20,12 +20,14 @@ import { PlayerControlBar } from './PlayerControlBar'
 import { Text } from '@/components/ui/Typography'
 import { message } from '@/components/ui/message'
 import { Spinner } from '@/components/ui/Spinner'
+import { Button } from '@/components/ui/Button'
 import { useSocket } from '@/hooks/useSocket'
-import { useSubtitles } from '@/hooks/useSubtitles'
+import { useSubtitles, type EmbeddedSource } from '@/hooks/useSubtitles'
 import { useCliAgent } from '@/hooks/useCliAgent'
 import { useRoomStore } from '@/store/roomStore'
 import { useDanmakuStore } from '@/store/danmakuStore'
 import { useCliAgentStore } from '@/store/cliAgentStore'
+import { useSystemSettingsStore } from '@/store/systemSettingsStore'
 import { getBilibiliParseOptions } from '@/modules/bilibili/parseOptions'
 import {
   DanmakuLayer,
@@ -43,6 +45,7 @@ import type { MediaFormat } from '@/lib/mediaFormat'
 import { useVideoPlayingState } from '@/modules/art-player/useVideoPlayingState'
 import { SettingsPanel } from '@/components/VideoPlayer/SettingsPanel'
 import { SubtitleOverlay } from '@/components/VideoPlayer/SubtitleOverlay'
+import { isCliProxyUrl } from '@/modules/player/services/url-proxy'
 import type { ArtSlots } from './WatchTogetherPanel'
 import {
   isIOSDevice,
@@ -141,6 +144,8 @@ export function WatchTogetherCore({
     availableQualities,
     reloadVideo,
     reloadBilibili,
+    loadMovieError,
+    retryLoadMovie,
   } = useWatchTogether({
     roomId,
     isHost,
@@ -150,6 +155,109 @@ export function WatchTogetherCore({
 
   // 字幕状态：房主操作广播同步，观众监听应用
   const subtitles = useSubtitles({ roomId, isHost })
+
+  // 内嵌字幕：仅当系统开关开启 && 视频走服务器中转（后端可访问视频字节）时才可用。
+  // - server-files：后端本地文件，恒为中转
+  // - webdav / openlist：仅 directLink=false（服务器中转）时后端可重建源 URL
+  const embeddedSubtitleEnabled = useSystemSettingsStore(
+    (s) => s.embeddedSubtitleEnabled
+  )
+  const audioTranscodeEnabled = useSystemSettingsStore(
+    (s) => s.audioTranscodeEnabled
+  )
+  const embeddedSource: EmbeddedSource | null = (() => {
+    if (currentMovieSourceType === 'server-files' && currentMoviePath) {
+      return { kind: 'server-files', path: currentMoviePath }
+    }
+    // emby / jellyfin：直接调其自带字幕接口，后端始终能访问，不受直链/中转限制
+    if (
+      (currentMovieSourceType === 'emby' ||
+        currentMovieSourceType === 'jellyfin') &&
+      currentMovieId != null
+    ) {
+      return {
+        kind: currentMovieSourceType as 'emby' | 'jellyfin',
+        movieId: currentMovieId,
+      }
+    }
+    if (
+      (currentMovieSourceType === 'webdav' ||
+        currentMovieSourceType === 'openlist') &&
+      currentMovieId != null &&
+      !currentMovieDirectLink
+    ) {
+      return {
+        kind: currentMovieSourceType as 'webdav' | 'openlist',
+        movieId: currentMovieId,
+      }
+    }
+    return null
+  })()
+  const canEnableEmbedded =
+    isHost && embeddedSubtitleEnabled && embeddedSource !== null
+
+  // ── 音频编码兼容性提示 ──────────────────────────────
+  // 浏览器 <video> 仅支持 AAC/MP3/Opus/FLAC 等少数音频编码。
+  // DTS/AC3/EAC3 等编码需要服务器 FFmpeg 实时转码为 AAC 才能出声：
+  // - server-files 源：后端 proxy 自动转码（转码会有数秒启动延迟）
+  // - emby 源：resolve 阶段已自动切换为 Emby 服务端转码 HLS
+  // 若服务器 FFmpeg 缺失/精简版不支持 AAC 编码，视频将无声——
+  // 提示让用户明白无声原因与等待转码的原因，而不是以为播放器坏了。
+  const BROWSER_SUPPORTED_AUDIO = new Set([
+    'aac',
+    'mp3',
+    'opus',
+    'vorbis',
+    'flac',
+  ])
+  const lastAudioNoticeRef = useRef('')
+  useEffect(() => {
+    if (!watchTogether.sourceUrl) return
+    const codec = watchTogether.audioCodec?.toLowerCase()
+    if (!codec || BROWSER_SUPPORTED_AUDIO.has(codec)) return
+
+    // 同一影片+编码只提示一次，避免每次 state 更新都弹
+    const key = `${currentMovieId ?? ''}:${codec}`
+    if (lastAudioNoticeRef.current === key) return
+    lastAudioNoticeRef.current = key
+
+    if (
+      currentMovieSourceType === 'emby' ||
+      currentMovieSourceType === 'jellyfin' ||
+      currentMovieSourceType === 'webdav'
+    ) {
+      if (audioTranscodeEnabled) {
+        addPlayerNotice(
+          `音轨编码 ${codec.toUpperCase()} 不受浏览器支持，已自动启用服务端音频转码`,
+          'info'
+        )
+      } else {
+        addPlayerNotice(
+          `音轨编码 ${codec.toUpperCase()} 不受浏览器支持，当前未开启音频转码，可能无声。如需声音请在管理后台「基础设置 → FFmpeg 引擎」开启音频转码开关`,
+          'error'
+        )
+      }
+    } else {
+      if (audioTranscodeEnabled) {
+        addPlayerNotice(
+          `音轨编码 ${codec.toUpperCase()} 不受浏览器支持，正在通过服务器 FFmpeg 实时转码为 AAC（若仍无声请确认已安装完整版 FFmpeg）`,
+          'info'
+        )
+      } else {
+        addPlayerNotice(
+          `音轨编码 ${codec.toUpperCase()} 不受浏览器支持，当前未开启音频转码，可能无声。如需声音请在管理后台「基础设置 → FFmpeg 引擎」开启音频转码开关`,
+          'error'
+        )
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    watchTogether.sourceUrl,
+    watchTogether.audioCodec,
+    currentMovieId,
+    currentMovieSourceType,
+    audioTranscodeEnabled,
+  ])
 
   // ── 切换影片时自动搜索同目录字幕 + 内嵌字幕 ──────────────
   // 当房主切换到新影片时，清空旧字幕并：
@@ -166,12 +274,22 @@ export function WatchTogetherCore({
     if (supportedSubtitleSources.includes(currentMovieSourceType)) {
       void subtitles.searchAutoSubtitles(currentMovieId)
     }
-    // 服务器文件：额外加载内嵌字幕轨道
-    if (currentMovieSourceType === 'server-files' && currentMoviePath) {
+    // 服务器文件：额外加载内嵌字幕轨道（仅开关开启）
+    if (
+      embeddedSubtitleEnabled &&
+      currentMovieSourceType === 'server-files' &&
+      currentMoviePath
+    ) {
       void subtitles.loadEmbeddedSubtitles(currentMoviePath)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentMovieId, isHost, currentMovieSourceType, currentMoviePath])
+  }, [
+    currentMovieId,
+    isHost,
+    currentMovieSourceType,
+    currentMoviePath,
+    embeddedSubtitleEnabled,
+  ])
 
   // ── CLI 代理上线后自动重新加载 ──────────────────────────
   // 页面刷新时 loadMovie 在 cliAgentStore.agents 填充之前就执行了，
@@ -179,6 +297,8 @@ export function WatchTogetherCore({
   // 当 agents 从空变为非空时，若当前影片已启用 CLI 但视频源尚未走 CLI 代理，
   // 自动触发重新加载以应用 CLI 代理。
   const prevCliAgentsCountRef = useRef(0)
+  // CLI 上线自动重载的冷却时间戳：CLI 掉线重连（1→0→1）等场景 60s 内不重复触发
+  const lastCliAutoReloadAtRef = useRef(0)
   useEffect(() => {
     const prev = prevCliAgentsCountRef.current
     prevCliAgentsCountRef.current = cliAgentsCount
@@ -189,6 +309,14 @@ export function WatchTogetherCore({
     if (!cliEnabled) return
     const state = useRoomStore.getState().watchTogether
     if (state.sourceType !== 'bilibili' || !state.sourceUrl) return
+    // 当前源已经在走 CLI 代理：无需重载（避免 CLI 掉线重连时重复全量重解析）
+    if (isCliProxyUrl(state.sourceUrl) || isCliProxyUrl(state.audioUrl ?? '')) {
+      return
+    }
+    // 冷却：60s 内只自动重载一次
+    const now = Date.now()
+    if (now - lastCliAutoReloadAtRef.current < 60_000) return
+    lastCliAutoReloadAtRef.current = now
     if (isHost) {
       triggerReloadBilibili()
     } else {
@@ -1551,6 +1679,27 @@ export function WatchTogetherCore({
           slots.overlayRoot
         )}
 
+      {/* 影片加载失败重试层（房主端 loadMovie 失败时显示）：
+          之前失败只有 toast，用户没有重试入口，只能切别的影片再切回 */}
+      {loadMovieError &&
+        isHost &&
+        createPortal(
+          <div className="absolute inset-0 z-[60] flex flex-col items-center justify-center gap-4 bg-black/70">
+            <div className="text-center">
+              <div className="mb-1 text-base font-medium text-white">
+                视频加载失败
+              </div>
+              <div className="max-w-md px-6 text-xs text-white/60">
+                {loadMovieError}
+              </div>
+            </div>
+            <Button variant="primary" onClick={retryLoadMovie}>
+              重试
+            </Button>
+          </div>,
+          slots.overlayRoot
+        )}
+
       {/* 播放器内通知（左上角），使用 overlayRoot 让通知始终可见 */}
       {createPortal(
         <div className="pointer-events-none absolute left-4 top-4 z-50 flex flex-col gap-2">
@@ -1687,16 +1836,18 @@ export function WatchTogetherCore({
                 currentMovieId != null &&
                 supportedSubtitleSources.includes(currentMovieSourceType)
               }
-              onLoadEmbeddedSubtitles={
-                isHost && currentMoviePath
-                  ? () => subtitles.loadEmbeddedSubtitles(currentMoviePath)
+              onListEmbeddedTracks={
+                canEnableEmbedded && embeddedSource
+                  ? () => subtitles.listEmbeddedTracks(embeddedSource)
                   : undefined
               }
-              canLoadEmbeddedSubtitles={
-                isHost &&
-                currentMovieSourceType === 'server-files' &&
-                !!currentMoviePath
+              onExtractEmbeddedTrack={
+                canEnableEmbedded && embeddedSource
+                  ? (track) =>
+                      subtitles.extractEmbeddedTrack(embeddedSource, track)
+                  : undefined
               }
+              canLoadEmbeddedSubtitles={canEnableEmbedded}
               onDanmakuStyleChange={setStyle}
               onDanmakuFilterChange={setFilters}
               onDanmakuAdvancedChange={setAdvancedStyle}

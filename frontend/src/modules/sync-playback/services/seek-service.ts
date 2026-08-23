@@ -4,7 +4,7 @@
  * 替代旧的 mse-reload.ts + run-mse-reload.ts。
  *
  * 核心改进：
- * - 不重建 MediaSource，调用 MsePlayer.seekTo（窗口化清理 + 缓存的 init segment + Range 下载）
+ * - 不重建 MediaSource，调用 引擎 seekTo（窗口化清理 + 缓存的 init segment + Range 下载）
  * - 统一锁管理 + UI 状态 + 事件抑制
  * - 所有 seek 场景（房主本地、观众跟随、观众控制指令）共用同一入口
  * - MSE seek 失败时（如 video.error），调用 onSeekFailed 回调让上层 forceReload
@@ -40,7 +40,7 @@ export interface ExecuteSeekParams {
   targetTime: number
   /** 当前播放状态（用于判断是否 MSE 流） */
   state: WatchTogetherState
-  /** usePlayerSource.seekTo：调用 MsePlayer.seekTo */
+  /** usePlayerSource.seekTo：调用 引擎 seekTo */
   seekTo: (video: HTMLVideoElement, targetTime: number) => Promise<SeekToResult>
   /** 事件抑制 ref */
   suppressEventsRef: MutableRefObject<boolean>
@@ -135,7 +135,7 @@ export async function executeSeek(params: ExecuteSeekParams): Promise<boolean> {
         return false
       }
       // needReload=true（video.error / InvalidStateError / 网络错误等不可恢复错误）
-      // → 调用 onSeekFailed 让上层 forceReload 创建全新 MsePlayer 实例
+      // → 调用 onSeekFailed 让上层 forceReload 创建全新 DashPlayer 实例
       if (onSeekFailed) {
         console.warn(
           '[seek-service] MSE seek 不可恢复失败，调用 forceReload 重新加载:',
@@ -205,6 +205,13 @@ export async function executeSeek(params: ExecuteSeekParams): Promise<boolean> {
     isReloadingRef.current = false
     suppressEventsRef.current = false
     useRoomStore.getState().setReloadingState(false, null)
+    // MSE seek 期间的 seeked 事件被 suppressEventsRef 吞掉（不发 seek 控制指令、
+    // 不更新服务器播放记忆），房主断线后外推基线会停留在 seek 前的旧进度。
+    // 此处补发一次 seeked 事件走正常广播链（handleSeeked 内有防抖与等价判断，
+    // 不会重复广播；handleSeeked 只广播、不会再触发 seek，无循环风险）。
+    if (handled) {
+      video.dispatchEvent(new Event('seeked'))
+    }
   }
   return handled
 }

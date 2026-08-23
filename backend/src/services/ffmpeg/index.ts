@@ -32,8 +32,8 @@ export const FFPROBE_BIN_PATH = path.join(
   process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'
 )
 
-/** 下载源（按平台） */
-function getDownloadSource(): { url: string; kind: 'zip' | 'tar.xz'; size: number } {
+/** 下载源（按平台）。供在线安装与手动下载链接生成共用（服务端平台为准）。 */
+export function getDownloadSource(): { url: string; kind: 'zip' | 'tar.xz'; size: number } {
   const platform = process.platform
   const arch = process.arch
 
@@ -46,13 +46,12 @@ function getDownloadSource(): { url: string; kind: 'zip' | 'tar.xz'; size: numbe
     }
   }
 
-  if (platform === 'linux' && (arch === 'x64' || arch === 'arm64')) {
+  if (platform === 'linux' && arch === 'x64') {
     // Linux: BtbN/FFmpeg-Builds GitHub Releases 静态构建
-    const suffix = arch === 'arm64' ? 'linuxarm64' : 'linux64'
     return {
-      url: `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${suffix}-gpl.tar.xz`,
+      url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz',
       kind: 'tar.xz',
-      size: arch === 'arm64' ? 120 * 1024 * 1024 : 140 * 1024 * 1024,
+      size: 140 * 1024 * 1024,
     }
   }
 
@@ -597,6 +596,27 @@ export function resolveFfprobePath(): string | null {
   return 'ffprobe'
 }
 
+/** 字幕提取输出格式（对应 ffmpeg 的 -f 参数）。ass 用于保留 ASS/SSA 样式与定位。 */
+export type SubtitleOutputFormat = 'srt' | 'ass' | 'webvtt'
+
+/**
+ * 根据 ffprobe 的内嵌字幕编码推导 ffmpeg 的提取输出格式，尽量保留原始样式：
+ * - ASS/SSA → ass（保留样式/定位，SSA 由 ffmpeg 自动转 ASS）
+ * - webvtt  → webvtt
+ * - 其余（subrip / mov_text 等）→ srt
+ */
+export function mapCodecToSubtitleFormat(codecName: string): SubtitleOutputFormat {
+  switch (codecName) {
+    case 'ass':
+    case 'ssa':
+      return 'ass'
+    case 'webvtt':
+      return 'webvtt'
+    default:
+      return 'srt'
+  }
+}
+
 export interface SubtitleStreamInfo {
   /** ffprobe 流索引（0-based，在所有流中的绝对索引） */
   index: number
@@ -628,8 +648,12 @@ const probeCache = new Map<string, MediaProbeInfo>()
  * 结果缓存在内存中，避免重复探测同一文件。
  * ffprobe 不可用时返回全 null。
  */
-export function probeMediaInfo(filePath: string): Promise<MediaProbeInfo> {
-  const cached = probeCache.get(filePath)
+export function probeMediaInfo(
+  input: string,
+  opts?: { headers?: string },
+): Promise<MediaProbeInfo> {
+  const cacheKey = opts?.headers ? `${input}\n${opts.headers}` : input
+  const cached = probeCache.get(cacheKey)
   if (cached) return Promise.resolve(cached)
 
   const ffprobePath = resolveFfprobePath()
@@ -640,10 +664,11 @@ export function probeMediaInfo(filePath: string): Promise<MediaProbeInfo> {
       ffprobePath,
       [
         '-v', 'error',
+        ...(opts?.headers ? ['-headers', opts.headers] : []),
         '-show_entries', 'stream=index,codec_name,codec_type:stream_tags=language,title',
         '-show_entries', 'format=duration',
         '-of', 'json',
-        filePath,
+        input,
       ],
       { timeout: 10000 },
       (err, stdout) => {
@@ -677,7 +702,7 @@ export function probeMediaInfo(filePath: string): Promise<MediaProbeInfo> {
             duration,
             subtitleStreams,
           }
-          probeCache.set(filePath, result)
+          probeCache.set(cacheKey, result)
           resolve(result)
         } catch {
           resolve({ audioCodec: null, videoCodec: null, duration: null, subtitleStreams: [] })
@@ -688,15 +713,19 @@ export function probeMediaInfo(filePath: string): Promise<MediaProbeInfo> {
 }
 
 /**
- * 使用 ffmpeg 提取指定字幕轨道为 SRT 格式文本。
+ * 使用 ffmpeg 提取指定字幕轨道为指定格式文本。
  *
- * @param filePath  源文件路径
- * @param streamIndex  ffprobe 流索引（绝对索引）
- * @returns SRT 格式字幕文本
+ * @param input       源文件路径或 http(s)/ftp URL（服务器中转源可以传 URL）
+ * @param streamIndex ffprobe 流索引（绝对索引）
+ * @param format      输出格式（默认 'srt'）。传 'ass' 可保留 ASS/SSA 样式
+ * @param opts        headers：HTTP 请求头（src 需鉴权时传入，例如 Authorization: Basic ...）
+ * @returns 字幕文本（格式由 format 决定）
  */
 export function extractSubtitleTrack(
-  filePath: string,
+  input: string,
   streamIndex: number,
+  format: SubtitleOutputFormat = 'srt',
+  opts?: { headers?: string },
 ): Promise<string> {
   const ffmpegPath = resolveFfmpegPath()
   if (!ffmpegPath) return Promise.reject(new Error('FFmpeg 不可用'))
@@ -705,9 +734,10 @@ export function extractSubtitleTrack(
     const proc = spawn(
       ffmpegPath,
       [
-        '-i', filePath,
+        ...(opts?.headers ? ['-headers', opts.headers] : []),
+        '-i', input,
         '-map', `0:${streamIndex}`,
-        '-f', 'srt',
+        '-f', format,
         'pipe:1',
       ],
       { stdio: ['ignore', 'pipe', 'pipe'] },
@@ -823,13 +853,15 @@ export interface TranscodeStreamResult {
  * 使用 FFmpeg 将音频转码为 AAC（192kbps 立体声），视频流直接复制，
  * 输出为 fragmented MP4 以支持流式传输。
  *
- * @param inputPath  源文件绝对路径
+ * @param inputPath  源文件绝对路径，或 http(s)/ftp URL（服务器中转的远程源）
  * @param seekTime   起始时间（秒），用于 seek 支持
+ * @param opts       headers：远程源需要的 HTTP 请求头（如 Authorization）
  * @returns 转码流与进程引用
  */
 export function createAudioTranscodeStream(
   inputPath: string,
   seekTime: number = 0,
+  opts?: { headers?: string },
 ): TranscodeStreamResult {
   const ffmpegPath = resolveFfmpegPath()
   if (!ffmpegPath) throw new Error('FFmpeg 不可用')
@@ -839,6 +871,10 @@ export function createAudioTranscodeStream(
   // seek 到指定时间（放在 -i 之前为快速 seek，精度略低但速度快）
   if (seekTime > 0) {
     args.push('-ss', seekTime.toFixed(3))
+  }
+
+  if (opts?.headers) {
+    args.push('-headers', opts.headers)
   }
 
   args.push(

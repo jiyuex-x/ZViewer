@@ -26,7 +26,7 @@ import { Space } from '@/components/ui/Space'
 import { Title, Text } from '@/components/ui/Typography'
 import { Tag } from '@/components/ui/Tag'
 import { Spinner } from '@/components/ui/Spinner'
-import { ConfirmModal } from '@/components/ui/Modal'
+import { Modal, ConfirmModal } from '@/components/ui/Modal'
 import { cn } from '@/lib/utils'
 import { Switch } from '@/components/ui/Switch'
 import { Input } from '@/components/ui/Input'
@@ -123,6 +123,8 @@ interface AdminSettings {
   dashDisabled: boolean
   cdnAccelerate: boolean
   cdnProxyUrl: string
+  embeddedSubtitleEnabled: boolean
+  audioTranscodeEnabled: boolean
   dataSourceConfig?: {
     aniSubsSubscriptions?: string[]
     kazumiRules?: string[]
@@ -154,6 +156,8 @@ export default function AdminPage() {
     dashDisabled: false,
     cdnAccelerate: false,
     cdnProxyUrl: 'https://gh-proxy.com',
+    embeddedSubtitleEnabled: true,
+    audioTranscodeEnabled: false,
   })
   const [loading, setLoading] = useState(false)
   const [settingsLoading, setSettingsLoading] = useState(false)
@@ -194,6 +198,8 @@ export default function AdminPage() {
   const [ffmpegUploading, setFfmpegUploading] = useState(false)
   const [ffmpegUploadPercent, setFfmpegUploadPercent] = useState(0)
   const ffmpegFileInputRef = useRef<HTMLInputElement | null>(null)
+  // 手动下载弹窗：用户自选目标平台的 FFmpeg 安装包
+  const [manualDownloadOpen, setManualDownloadOpen] = useState(false)
 
   const authHeaders = {
     'Content-Type': 'application/json',
@@ -862,6 +868,8 @@ export default function AdminPage() {
         dashDisabled: settings.dashDisabled,
         cdnAccelerate: settings.cdnAccelerate,
         cdnProxyUrl: settings.cdnProxyUrl,
+        embeddedSubtitleEnabled: settings.embeddedSubtitleEnabled,
+        audioTranscodeEnabled: settings.audioTranscodeEnabled,
       }
       if (settings.dataSourceConfig) {
         payload.dataSourceConfig = settings.dataSourceConfig
@@ -1611,6 +1619,21 @@ export default function AdminPage() {
                 <Title level={5} className="mb-4 mt-6">
                   FFmpeg 引擎
                 </Title>
+                <div className="mb-4">
+                  <Switch
+                    label="启用 FFmpeg 音频转码"
+                    checked={settings.audioTranscodeEnabled}
+                    onChange={(e) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        audioTranscodeEnabled: e.target.checked,
+                      }))
+                    }
+                  />
+                  <p className="mt-1.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                    开启后，服务器中转播放时若检测到浏览器不支持的音轨编码（DTS/AC3/EAC3/TrueHD 等），将由 FFmpeg 实时转码为 AAC。需安装完整版 FFmpeg。关闭时一律直推，浏览器可能无声。
+                  </p>
+                </div>
                 <div
                   className="mb-6 flex flex-col gap-2 rounded-[var(--md-sys-shape-corner)] p-3"
                   style={{
@@ -1699,20 +1722,14 @@ export default function AdminPage() {
                             {(!available || needFullVersion) &&
                               !ffmpegInstalling &&
                               !ffmpegUploading && (
-                                <a
-                                  href={
-                                    ffmpegStatus?.platform === 'win32'
-                                      ? 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
-                                      : 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz'
-                                  }
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex h-8 items-center gap-1.5 rounded-[var(--md-sys-shape-corner-full)] px-3 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)] transition-colors hover:bg-[var(--md-sys-color-surface-container-highest)]"
-                                  title={`在浏览器中手动下载 FFmpeg（${ffmpegStatus?.platform === 'win32' ? 'Windows' : 'Linux'} 版本）`}
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  icon={<ExternalLink className="h-3.5 w-3.5" />}
+                                  onClick={() => setManualDownloadOpen(true)}
                                 >
-                                  <ExternalLink className="h-3.5 w-3.5" />
                                   手动下载
-                                </a>
+                                </Button>
                               )}
                             <input
                               ref={ffmpegFileInputRef}
@@ -1786,6 +1803,70 @@ export default function AdminPage() {
                     )
                   })()}
                 </div>
+
+                <div className="mb-6">
+                  <Switch
+                    label="允许内嵌字幕（仅服务器中转）"
+                    checked={settings.embeddedSubtitleEnabled}
+                    onChange={(e) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        embeddedSubtitleEnabled: e.target.checked,
+                      }))
+                    }
+                  />
+                  <p className="mt-1.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                    开启后，视频走服务器中转（后端可直接访问视频字节）时可识别并播放视频内封字幕轨道；直链模式不支持。
+                  </p>
+                </div>
+
+                {/* 手动下载弹窗：用户自选目标平台的 FFmpeg 安装包。
+                    下载发生在浏览器所在机器，上传到服务端时才需要与服务端平台匹配，
+                    因此提供全部平台由用户自行选择，而非按服务端平台限定。 */}
+                <Modal
+                  open={manualDownloadOpen}
+                  onClose={() => setManualDownloadOpen(false)}
+                  title="手动下载 FFmpeg"
+                  className="max-w-lg"
+                  footer={
+                    <Button
+                      variant="secondary"
+                      onClick={() => setManualDownloadOpen(false)}
+                    >
+                      关闭
+                    </Button>
+                  }
+                >
+                  <div className="flex flex-col gap-2">
+                    <Text className="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                      请选择与<b>服务器操作系统</b>匹配的 FFmpeg
+                      安装包。下载完成后，通过上方「手动安装」上传 zip / tar.xz 文件。
+                    </Text>
+                    {(ffmpegStatus?.manualDownloadUrls ?? []).map((item) => (
+                      <a
+                        key={item.platform}
+                        href={item.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setManualDownloadOpen(false)}
+                        className="flex items-center justify-between rounded-[var(--md-sys-shape-corner)] px-3 py-2.5 text-sm transition-colors hover:bg-[var(--md-sys-color-surface-container-highest)]"
+                      >
+                        <span>{item.label}</span>
+                        <ExternalLink className="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
+                      </a>
+                    ))}
+                    {ffmpegStatus?.platform && (
+                      <Text className="mt-1 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+                        当前检测到服务器平台：
+                        {ffmpegStatus.platform === 'win32'
+                          ? 'Windows'
+                          : ffmpegStatus.platform === 'linux'
+                            ? 'Linux'
+                            : ffmpegStatus.platform}
+                      </Text>
+                    )}
+                  </div>
+                </Modal>
 
                 <Title level={5} className="mb-4 mt-6">
                   版本更新

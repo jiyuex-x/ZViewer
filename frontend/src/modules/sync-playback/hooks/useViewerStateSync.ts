@@ -78,7 +78,7 @@ export type UseViewerStateSyncReturn = void
  *
  * 4. **seek 到未缓冲区域的 MSE seek**：
  *    观众端跟随房主 seek 时（通过 control 事件），若目标位置不在缓冲范围内且为 MSE 流，
- *    调用 executeSeek → MsePlayer.seekTo（不重建 MediaSource）。用 isReloadingRef 锁防止并发。
+ *    调用 executeSeek → 引擎 seekTo（不重建媒体源）。用 isReloadingRef 锁防止并发。
  */
 export function useViewerStateSync({
   roomId,
@@ -104,6 +104,9 @@ export function useViewerStateSync({
   const lastAppliedPlaybackRateRef = useRef<number | null>(null)
   // 缓冲模式：下载取消器，新 source 到来时取消未完成下载避免竞态
   const downloadAbortRef = useRef<AbortController | null>(null)
+  // 最近一次收到的广播序号：检测跳号（seq > lastSeq + 1）即说明错失了中间广播
+  // （socket 重连窗口），主动请求全量状态自愈，避免 diff 合并基线错位
+  const lastSeqRef = useRef(0)
 
   useEffect(() => {
     if (!socket || isHostRef.current) return
@@ -176,7 +179,10 @@ export function useViewerStateSync({
           useRoomStore.getState().setBufferProgress(null)
         }
 
-        await applySourceToVideo(video, state, undefined, blobs)
+        // 传入 state.currentTime 作为 startTime：引擎（DashPlayer）从该时间对应
+        // 的字节位置开始下载，而非从文件头顺序下载到目标位置才播放
+        // （房主切清晰度/换片时观众从房主当前进度起播，避免长缓冲）。
+        await applySourceToVideo(video, state, state.currentTime || undefined, blobs)
         // applySourceToVideo 后视频元素可能已替换，重新获取
         const currentVideo = videoRef.current
         if (!currentVideo) return
@@ -241,6 +247,17 @@ export function useViewerStateSync({
     }
 
     const handleState = (payload: StatePayload) => {
+      // 跳号检测：seq > lastSeq + 1 说明错失了中间广播（socket 重连窗口等），
+      // diff 合并基线已错位 → 强制丢弃 diff 用全量 state，并请求全量状态自愈。
+      if (typeof payload.seq === 'number' && payload.seq > 0) {
+        const lastSeq = lastSeqRef.current
+        if (lastSeq > 0 && payload.seq > lastSeq + 1) {
+          // 错失广播：用全量 state 覆盖（忽略 diff），并请求房主/服务器最新状态
+          socket?.emit(SOCKET_EVENT.REQUEST_STATE, { roomId })
+        }
+        lastSeqRef.current = payload.seq
+      }
+
       // P1-Opt#7：增量状态合并——优先使用 diff 合并到现有 state，避免全量替换
       const state = payload.diff
         ? mergeStateDiff(
@@ -248,18 +265,10 @@ export function useViewerStateSync({
             payload.diff as Partial<WatchTogetherState>
           )
         : payload.state
-      suppressEventsRef.current = true
-      setWatchTogether(state)
 
       // 判断是否为 sourceUrl 变化
       const isSourceChange = lastAppliedSourceUrlRef.current !== state.sourceUrl
-
-      // 串行化 applySourceToVideo：若上一次 apply 还在进行中，
-      // 仅缓存最新 state，等上一次完成后处理最新值。
-      if (isSourceChange) {
-        pendingStateRef.current = state
-        if (isApplyingRef.current) return
-      }
+      setWatchTogether(state)
 
       const processState = async (s: WatchTogetherState) => {
         isApplyingRef.current = true
@@ -280,17 +289,31 @@ export function useViewerStateSync({
           pendingStateRef.current = null
           await processState(next)
         }
+        // 释放 drain 启动者获取的那一次抑制
         suppressEventsRef.current = false
       }
 
+      // 抑制计数必须在"确定成为处理者"时才获取（+1），并由处理完成点释放（−1）。
+      // 若在函数入口无条件 +1，pending 缓存路径会提前 return 且无对应 -1，
+      // drain 只释放启动者的一次 → 计数悬挂 → 心跳校正/事件处理被永久拦截
+      // （症状：房主跳转进度后观众不再自动跟随）。
+
+      // 串行化 applySourceToVideo：若上一次 apply 还在进行中，
+      // 仅缓存最新 state，等上一次完成后处理最新值。
       if (isSourceChange) {
+        pendingStateRef.current = state
+        if (isApplyingRef.current) return
+        // 成为 drain 启动者：获取抑制，drain 结束时统一释放
+        suppressEventsRef.current = true
         void drain()
-      } else {
-        // 非 sourceUrl 变化：直接同步，不需要串行化
-        void processState(state).then(() => {
-          suppressEventsRef.current = false
-        })
+        return
       }
+
+      // 非 sourceUrl 变化：直接同步，不需要串行化（各自 acquire/release 配对）
+      suppressEventsRef.current = true
+      void processState(state).then(() => {
+        suppressEventsRef.current = false
+      })
     }
 
     const handleControl = (payload: ControlPayload) => {
@@ -489,8 +512,9 @@ export function useViewerHeartbeat({
       }
     }
 
-    socket.on(SOCKET_EVENT.HOST_HEARTBEAT, handleHeartbeat)
-    // 统一心跳协议（#14）：监听从房主发出的 sync-heartbeat（source='host'）
+    // 统一心跳协议（#14）：只监听 sync-heartbeat（source='host'）。
+    // 后端同时转发旧 host-heartbeat 与新 sync-heartbeat，若两者都绑定会导致
+    // 每条心跳被处理两遍（重复校正计算 + zustand 双倍 notify），故不再绑定旧事件。
     const handleSyncHeartbeat = (payload: SyncHeartbeatPayload) => {
       if (
         payload.source === 'host' &&
@@ -506,7 +530,6 @@ export function useViewerHeartbeat({
     }
     socket.on(SOCKET_EVENT.SYNC_HEARTBEAT, handleSyncHeartbeat)
     return () => {
-      socket.off(SOCKET_EVENT.HOST_HEARTBEAT, handleHeartbeat)
       socket.off(SOCKET_EVENT.SYNC_HEARTBEAT, handleSyncHeartbeat)
     }
   }, [socket, isHostRef, videoRef, suppressEventsRef])

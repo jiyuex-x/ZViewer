@@ -271,10 +271,9 @@ export function useVideoSource({
   watchTogether,
   isHostRef,
 }: UseVideoSourceOptions): UseVideoSourceReturn {
-  const { attachSource, cleanup, seekTo, forceReload, playerRef } =
-    usePlayerSource({
-      videoRef,
-    })
+  const { attachSource, cleanup, seekTo, forceReload } = usePlayerSource({
+    videoRef,
+  })
   const restoredRef = useRef(false)
 
   const cleanupMedia = cleanup
@@ -293,18 +292,7 @@ export function useVideoSource({
       startTime?: number,
       blobs?: { videoBlob: Blob; audioBlob: Blob }
     ) => {
-      ;(window as unknown as { __srcDebug?: unknown[] }).__srcDebug =
-        (window as unknown as { __srcDebug?: unknown[] }).__srcDebug || []
-      ;(window as unknown as { __srcDebug?: unknown[] }).__srcDebug!.push({
-        step: 'applySourceToVideo',
-        sourceUrl: state.sourceUrl?.slice(0, 80),
-        format: state.format,
-        sourceType: state.sourceType,
-      })
       if (!state.sourceUrl) {
-        ;(window as unknown as { __srcDebug?: unknown[] }).__srcDebug!.push({
-          step: 'sourceUrl empty',
-        })
         return
       }
 
@@ -373,7 +361,7 @@ export function useVideoSource({
     restoredRef.current = true
     suppressEventsRef.current = true
     // 传入 state.currentTime 作为 startTime：页面刷新后恢复播放进度时，
-    // MsePlayer 从该时间对应的字节偏移开始下载，而非从文件头顺序下载。
+    // DashPlayer 从该时间对应的字节偏移开始下载，而非从文件头顺序下载。
     // 否则恢复后需要从头加载到 currentTime 才能播放。
     const startTime = state.currentTime > 0 ? state.currentTime : undefined
     void applySourceToVideo(video, state, startTime)
@@ -410,7 +398,7 @@ export function useVideoSource({
   // 重载视频源：重载按钮调用 + MSE seek 失败时的恢复手段。
   // 从当前播放位置附近重新 attach（MSE 引擎通过 startTime 计算 Range 下载起点），
   // 完成后恢复到原播放位置。用于视频卡死、花屏、缓冲异常等场景的手动恢复。
-  // 也用于 MSE seek 失败（video.error）时：创建全新 MsePlayer 实例，
+  // 也用于 MSE seek 失败（video.error）时：创建全新 DashPlayer 实例，
   // 用最新 state URL 重新加载，避免旧实例的 video.error / URL 过期问题。
   const reloadVideo = useCallback(
     async (video: HTMLVideoElement) => {
@@ -439,10 +427,10 @@ export function useVideoSource({
 
   // seek 到未缓冲区域时的处理：
   // 当用户回退到 SourceBuffer 中已被清理的位置时，视频会卡死（没有数据可播放）。
-  // 调用 executeSeek → MsePlayer.seekTo（不重建 MediaSource，清空 SourceBuffer + Range 下载）。
+  // 调用 executeSeek → 引擎 seekTo（不重建 MediaSource，清空 SourceBuffer + Range 下载）。
   // 仅对 MSE 流（DASH / 含 audioUrl）生效，普通 mp4 直链由浏览器原生处理。
   // MSE seek 失败时（如 video.error），executeSeek 会调用 onSeekFailed → reloadVideo
-  // 创建全新 MsePlayer 实例（用最新 state URL）重新加载。
+  // 创建全新 DashPlayer 实例（用最新 state URL）重新加载。
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -451,9 +439,6 @@ export function useVideoSource({
 
     const handleSeeking = () => {
       if (suppressEventsRef.current) {
-        console.warn(
-          `[useVideoSource] handleSeeking 跳过: suppressEventsRef=true targetTime=${video.currentTime}`
-        )
         return
       }
 
@@ -461,11 +446,6 @@ export function useVideoSource({
       // 由 executeSeek 记录为待处理目标，锁释放后接续处理（连续拖拽不丢目标）
       const targetTime = video.currentTime
       const state = useRoomStore.getState().watchTogether
-      const player = playerRef.current
-
-      console.warn(
-        `[useVideoSource] handleSeeking target=${targetTime.toFixed(1)}s isMseStream=${state.format === 'dash' || !!state.audioUrl} player=${!!player} isAttached=${player?.isAttached} isReloading=${isReloadingRef.current} bufferedRanges=${video.buffered.length} sourceUrl=${!!state.sourceUrl}`
-      )
 
       void executeSeek({
         video,
@@ -482,7 +462,7 @@ export function useVideoSource({
     return () => {
       video.removeEventListener('seeking', handleSeeking)
     }
-  }, [videoRef, seekTo, suppressEventsRef, reloadVideo, playerRef])
+  }, [videoRef, seekTo, suppressEventsRef, reloadVideo])
 
   return {
     applySourceToVideo,

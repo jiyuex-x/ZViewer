@@ -9,12 +9,11 @@
  * 3. format='flv' → FLV 引擎
  * 4. 其他 → Direct 引擎（浏览器原生播放 mp4/webm 等）
  *
- * 注：自研 MSE 引擎（mseEngine）暂时禁用，所有含独立音频轨的源
- *    统一由 dash.js 引擎处理（失败时降级为 direct + audio-sync）。
+ * 注：自研 MSE 引擎已移除（曾长期不可达：所有含独立音频轨的源统一由
+ *    dash.js 引擎处理，失败时降级为 direct + audio-sync）。
  */
 import type { PlayerEngine, PlayerSource, EngineType } from './types'
 import { dashEngine } from './engines/dash-engine'
-import { mseEngine } from './engines/mse-engine'
 import { hlsEngine } from './engines/hls-engine'
 import { flvEngine } from './engines/flv-engine'
 import { directEngine } from './engines/direct-engine'
@@ -22,7 +21,6 @@ import { directEngine } from './engines/direct-engine'
 /** 所有引擎实例（单例，无需重复创建） */
 const ENGINES: Record<EngineType, PlayerEngine> = {
   dash: dashEngine,
-  mse: mseEngine,
   hls: hlsEngine,
   flv: flvEngine,
   direct: directEngine,
@@ -30,34 +28,16 @@ const ENGINES: Record<EngineType, PlayerEngine> = {
 
 /** 根据源数据选择合适的播放引擎。 */
 export function selectEngine(source: PlayerSource): PlayerEngine {
-  const engineChoice = {
-    format: source.format,
-    audioUrl: !!source.audioUrl,
-    url: source.url?.slice(0, 80),
-    engine: '',
-  }
   // DASH 源或含独立音频轨 → dash.js 引擎
   // （自研 MSE 引擎暂时禁用，统一由 dash.js 处理双轨合并）
   if (source.format === 'dash' || source.audioUrl) {
-    engineChoice.engine = 'dash'
-    ;(window as unknown as { __engineChoice?: unknown }).__engineChoice =
-      engineChoice
     return ENGINES.dash
   }
   if (source.format === 'hls') {
-    engineChoice.engine = 'hls'
-    ;(window as unknown as { __engineChoice?: unknown }).__engineChoice =
-      engineChoice
     return ENGINES.hls
   }
   if (source.format === 'flv') {
-    engineChoice.engine = 'flv'
-    ;(window as unknown as { __engineChoice?: unknown }).__engineChoice =
-      engineChoice
     return ENGINES.flv
   }
-  engineChoice.engine = 'direct'
-  ;(window as unknown as { __engineChoice?: unknown }).__engineChoice =
-    engineChoice
   return ENGINES.direct
 }

@@ -12,8 +12,8 @@
  *
  * 相比 v1 的改进：
  * - Promise 队列替代 isAttaching/isReloading 双锁与 5s 等待循环；
- * - 不再读写 video._mseAbortController：旧引擎的下载中断由
- *   engine cleanup（MsePlayer.cleanup 内部 abort）负责；
+ * - 不再读写 video._mseAbortController：引擎的下载中断由
+ *   engine cleanup（DashPlayer.cleanup 内部 abort attach 请求）负责；
  * - forceReload 多次调用合并为最新 source 的一次重载。
  *
  * 该 Hook 是引擎无关的：不关心是房主还是观众，也不依赖 WatchTogetherState。
@@ -49,9 +49,8 @@ export interface UsePlayerSourceReturn {
   /** 当前已应用的 sourceUrl（用于去重与 seek-to-unbuffered 逻辑） */
   appliedSourceUrlRef: MutableRefObject<string | null>
   /**
-   * 引擎控制器实例（MSE / DASH 引擎返回，供外部调用 seekTo）。
-   * 替代旧 msePlayerRef，使用 PlayerController 接口抽象，
-   * 可同时持有 MsePlayer 或 DashPlayer 实例。
+   * 引擎控制器实例（DASH 引擎返回，供外部调用 seekTo）。
+   * 使用 PlayerController 接口抽象，无需感知底层引擎实现。
    */
   playerRef: MutableRefObject<PlayerController | null>
   /**
@@ -108,7 +107,7 @@ export function usePlayerSource(
     engineCleanupRef.current = null
     if (engineCleanup) {
       try {
-        // MsePlayer.cleanup 内部 abort 下载并释放 MediaSource；
+        // 引擎 cleanup（如 DashPlayer）内部中断下载并释放资源；
         // hls/flv 引擎销毁实例。放在 try 中避免清理异常阻断后续 attach。
         engineCleanup()
       } catch {
@@ -116,6 +115,9 @@ export function usePlayerSource(
       }
     }
     playerRef.current = null
+    // 清空"已应用源"标记：引擎销毁后同 URL 重播不应被去重快速路径跳过，
+    // 否则清片/清理后再播放同一 URL 会黑屏。
+    appliedSourceUrlRef.current = null
   }, [])
 
   /**
@@ -125,10 +127,12 @@ export function usePlayerSource(
   const attachInner = useCallback(
     async (video: HTMLVideoElement, source: PlayerSource): Promise<void> => {
       const previousUrl = appliedSourceUrlRef.current
-      appliedSourceUrlRef.current = source.url
       try {
+        // cleanup 会清空 appliedSourceUrlRef（引擎销毁后旧标记失效），
+        // 因此新源的标记必须在 cleanup 之后写入。
         cleanup()
         resetVideoElement(video)
+        appliedSourceUrlRef.current = source.url
         const engine = selectEngine(source)
         const result = await engine.attach(video, source)
         if (result.blobUrl) {
@@ -147,19 +151,12 @@ export function usePlayerSource(
 
   const attachSource = useCallback(
     async (video: HTMLVideoElement, source: PlayerSource) => {
-      console.log('[attachSource] called:', {
-        url: source.url?.slice(0, 80),
-        format: source.format,
-        appliedSourceUrl: appliedSourceUrlRef.current?.slice(0, 80),
-      })
       if (!source.url) {
-        console.log('[attachSource] source.url is empty, returning')
         return
       }
 
       // 同一 sourceUrl 不重复加载（快速路径，不入队）
       if (appliedSourceUrlRef.current === source.url) {
-        console.log('[attachSource] duplicate url, returning')
         return
       }
 
@@ -167,18 +164,14 @@ export function usePlayerSource(
       // mkv 需 Chrome 91+ 且编码为 H.264/AAC。avi/flv/wmv/ts 等容器直接赋值会抛 NotSupportedError。
       // 预检放在更新 appliedSourceUrlRef 之前，失败时不污染"已应用"标记。
       if (source.format && !isBrowserPlayableFormat(source.format)) {
-        console.log('[attachSource] format not playable:', source.format)
         throw new Error(getUnsupportedFormatMessage(source.format))
       }
 
-      console.log('[attachSource] entering queue')
       await enqueue(async () => {
         // 入队期间可能已被其他操作应用了同一源（如 forceReload），再次去重
         if (appliedSourceUrlRef.current === source.url) {
-          console.log('[attachSource] duplicate after queue, returning')
           return
         }
-        console.log('[attachSource] calling attachInner')
         await attachInner(video, source)
       })
     },
@@ -188,7 +181,7 @@ export function usePlayerSource(
   /**
    * seek 到目标时间。不重建 MediaSource。
    *
-   * MsePlayer 存在时委托其 seekTo（abort 下载 → 清缓冲 → init → Range 续传）；
+   * 引擎控制器存在时委托其 seekTo（abort 下载 → 清缓冲 → 从目标位置续传）；
    * 不存在（非 MSE 流）返回 { success: false }，调用方执行普通 seek。
    * needReload=true 表示不可恢复错误（video.error），需要上层 forceReload。
    */
@@ -232,7 +225,6 @@ export function usePlayerSource(
           pendingReloadRef.current = null
           cleanup()
           resetVideoElement(video)
-          appliedSourceUrlRef.current = null
           await attachInner(video, latest)
         })
       } finally {

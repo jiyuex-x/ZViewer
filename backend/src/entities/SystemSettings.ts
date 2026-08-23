@@ -44,7 +44,7 @@ export class SystemSettings {
   dashDisabled!: boolean;
 
   /**
-   * 更新 CDN 加速开关。
+   * CDN 加速开关。
    * - true：更新检测和下载走 CDN 代理
    * - false：直连 GitHub
    */
@@ -52,10 +52,30 @@ export class SystemSettings {
   cdnAccelerate!: boolean;
 
   /**
+   * 内嵌字幕（embedded/muxed 字幕轨道）功能开关。
+   * 仅当视频走服务器中转（后端可直接访问视频字节）时内嵌字幕才可用：
+   * - server-files：后端本地文件，恒可用
+   * - webdav/openlist：仅 directLink=false（服务器中转）时可用，直链不可用
+   */
+  @Column({ type: 'boolean', default: true })
+  embeddedSubtitleEnabled!: boolean;
+
+  /**
    * CDN 代理地址（含协议前缀），如 https://gh-proxy.com。
    * 仅在 cdnAccelerate 为 true 时生效，对所有 GitHub 请求（api.github.com、
    * github.com、objects.githubusercontent.com）统一使用前缀代理方式。
    */
+  /**
+   * FFmpeg 音频转码开关。
+   * 浏览器不支持的音轨编码（DTS/AC3/EAC3/TrueHD 等）在服务器中转时是否由
+   * FFmpeg 实时转码为 AAC。默认关闭（手动开启），避免在未安装完整版 FFmpeg 的
+   * 环境下对每次请求都做 ffprobe 探测产生额外开销。
+   * - true：启用自动转码（需容器命中 + 音轨编码不在浏览器白名单 + FFmpeg 可用）
+   * - false：一律直推，浏览器可能无声
+   */
+  @Column({ type: 'boolean', default: false })
+  audioTranscodeEnabled!: boolean;
+
   @Column({ type: 'text', default: 'https://gh-proxy.com' })
   cdnProxyUrl!: string;
 

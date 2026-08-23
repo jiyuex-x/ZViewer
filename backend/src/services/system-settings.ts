@@ -19,6 +19,8 @@ const DEFAULT_SETTINGS: Partial<SystemSettings> = {
   dashDisabled: true,
   cdnAccelerate: false,
   cdnProxyUrl: 'https://gh-proxy.com',
+  embeddedSubtitleEnabled: true,
+  audioTranscodeEnabled: false,
 };
 
 /**
