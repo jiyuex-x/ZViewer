@@ -6,20 +6,21 @@ RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制整个项目（包含 pnpm-workspace.yaml）
+# 复制整个项目（包含 pnpm-workspace.yaml 和所有子包）
 COPY . .
 
-# 安装所有依赖（包括所有子包）
+# 安装所有依赖（根目录 + 所有子包）
 RUN pnpm install
 
-# 构建 backend：手动执行编译，不依赖 package.json 中的 build 脚本
+# 进入 backend 子包，单独再次安装（确保依赖完整，尤其是 typescript）
 WORKDIR /app/backend
+RUN pnpm install
 
-# 可选：清理旧 dist（clean-dist.js 如果存在则运行，不存在则跳过）
+# 清理旧的 dist（如果脚本存在）
 RUN node scripts/clean-dist.js 2>/dev/null || true
 
-# 使用 pnpm exec 执行 tsc（确保找到本地安装的 TypeScript）
-RUN pnpm exec tsc
+# 使用 pnpm run build（现在 tsc 应该能被找到）
+RUN pnpm run build
 
 # 复制 .json 等非 ts 资源到 dist（tsc 不会复制它们）
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
