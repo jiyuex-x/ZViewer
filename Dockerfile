@@ -32,12 +32,11 @@ RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 di
 # 生产阶段
 FROM node:20-alpine
 
-# 安装 ffmpeg 和 pnpm（pnpm 用于安装生产依赖）
 RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制 package.json 以便安装依赖
+# 复制 package.json 和 workspace 配置
 COPY --from=builder /app/backend/package*.json ./backend/
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
@@ -45,12 +44,9 @@ COPY --from=builder /app/pnpm-workspace.yaml ./
 # 复制构建产物
 COPY --from=builder /app/backend/dist ./backend/dist
 
-# 安装生产依赖（包括 reflect-metadata）
+# 安装所有依赖（包括 dev），确保 reflect-metadata 被正确安装
 WORKDIR /app/backend
-RUN pnpm install --prod
-
-# 额外安装一次 reflect-metadata（确保存在）
-RUN pnpm add reflect-metadata
+RUN pnpm install
 
 EXPOSE 3333
 
