@@ -1,33 +1,42 @@
-FROM debian:bullseye-slim
+# 构建阶段
+FROM node:20-alpine AS builder
 
-# procps: 提供 pgrep，供 Docker 更新脚本在 pidfile 缺失时回退定位后端进程
-# xz-utils: 提供 xz 解压支持，tar -xf *.tar.xz 需要 xz 命令
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    procps \
-    xz-utils \
-    && rm -rf /var/lib/apt/lists/*
+# 安装 ffmpeg（流处理需要）和 pnpm
+RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制单文件产物（统一端口：后端托管前端静态文件，无需前端 exe）
-COPY dist/linux/zviewer-backend .
-COPY dist/linux/zviewer-cert .
-COPY dist/linux/start.sh .
-COPY dist/linux/.env .
-COPY dist/linux/package.json .
-COPY dist/linux/frontend/dist ./frontend/dist/
+# 复制整个项目（必须包含根目录的 pnpm-workspace.yaml 和 package.json）
+COPY . .
 
-# 创建运行时数据目录
-RUN mkdir -p config/ssl config/uploads config/media log
+# 安装所有依赖（monorepo 会自动链接）
+RUN pnpm install
 
-# 暴露端口
-# 3333: 统一端口 - 后端 REST API + WebSocket (Socket.IO) + 前端静态文件 + /live HTTP-FLV 代理
-# 3334: RTMP 推流端口 (OBS 连接)
-EXPOSE 3333 3334
+# 只构建后端
+WORKDIR /app/backend
+RUN pnpm run build
 
-# Entrypoint（HTTP 模式，仅启动后端，由后端统一提供 API + 前端静态文件）
-COPY docker/entrypoint-linux-single.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# 复制 .json 等非 ts 资源到 dist（tsc 不会复制它们）
+RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
-CMD ["/app/entrypoint.sh"]
+# ------------------------------
+# 生产阶段
+FROM node:20-alpine
+
+RUN apk add --no-cache ffmpeg
+
+WORKDIR /app
+
+# 只复制后端的构建产物和依赖
+COPY --from=builder /app/backend/dist ./backend/dist
+COPY --from=builder /app/backend/node_modules ./backend/node_modules
+
+# （可选）保留根目录的配置文件（某些运行时可能需要）
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
+
+# 暴露后端端口（默认 3333）
+EXPOSE 3333
+
+# 启动后端
+CMD ["node", "backend/dist/index.js"]
