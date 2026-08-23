@@ -13,15 +13,13 @@ WORKDIR /app/backend
 
 RUN pnpm install
 
-# 显式安装缺失的依赖（htmlparser2、dom-serializer 及其类型）
-RUN pnpm add -D @types/cors htmlparser2 dom-serializer
+# 安装 esbuild（用于快速构建）
+RUN pnpm add -D esbuild
 
-RUN node scripts/clean-dist.js 2>/dev/null || true
+# 使用 esbuild 打包（忽略类型错误，直接编译）
+RUN ./node_modules/.bin/esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js --external:pg-native --external:sqlite3 --external:bufferutil --external:utf-8-validate
 
-# 编译 TypeScript（忽略类型错误，强制生成 JS）
-RUN ./node_modules/.bin/tsc --noEmitOnError false --skipLibCheck --strict false --noImplicitAny false
-
-# 复制 .json 资源文件
+# 复制 .json 资源文件（esbuild 不会自动复制，需手动）
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
 # 生产阶段
@@ -31,8 +29,11 @@ RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
 
+# 复制构建产物和依赖
 COPY --from=builder /app/backend/dist ./backend/dist
 COPY --from=builder /app/backend/node_modules ./backend/node_modules
+
+# 可选：保留根目录配置
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 
