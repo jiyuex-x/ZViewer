@@ -36,17 +36,17 @@ RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制 package.json 和 workspace 配置
-COPY --from=builder /app/backend/package*.json ./backend/
+# 复制整个 backend 目录（包含源码、package.json、已编译的 dist）
+COPY --from=builder /app/backend ./backend
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
 
-# 复制构建产物
-COPY --from=builder /app/backend/dist ./backend/dist
-
-# 安装所有依赖（包括 dev），确保 reflect-metadata 被正确安装
+# 进入 backend 目录，强制重新安装所有依赖，忽略 lockfile 冲突
 WORKDIR /app/backend
-RUN pnpm install
+RUN pnpm install --no-frozen-lockfile
+
+# 额外安装 reflect-metadata，确保它存在
+RUN pnpm add reflect-metadata
 
 EXPOSE 3333
 
