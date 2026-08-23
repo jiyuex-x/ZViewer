@@ -9,14 +9,14 @@ WORKDIR /app
 # 复制整个项目（必须包含根目录的 pnpm-workspace.yaml 和 package.json）
 COPY . .
 
-# 安装所有依赖（monorepo 会自动链接）
+# 安装所有依赖（包括所有子包）
 RUN pnpm install
 
-# 只构建后端
-WORKDIR /app/backend
-RUN pnpm run build
+# 使用 pnpm filter 仅构建 backend 子包（自动找到 tsc）
+RUN pnpm --filter backend run build
 
 # 复制 .json 等非 ts 资源到 dist（tsc 不会复制它们）
+WORKDIR /app/backend
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
 # ------------------------------
