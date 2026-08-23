@@ -24,32 +24,24 @@ RUN ./node_modules/.bin/tsc \
     --skipLibCheck \
     --strict false \
     --noImplicitAny false \
-    --strictNullChecks false \
-    || true
+    --strictNullChecks false
 
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
 # 生产阶段
 FROM node:20-alpine
 
-RUN apk add --no-cache ffmpeg && npm install -g pnpm
+RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
 
-# 复制 backend 的 package.json（用于安装依赖）
-COPY --from=builder /app/backend/package*.json ./backend/
+# 复制整个 backend 目录（包含 dist 和 node_modules）
+COPY --from=builder /app/backend ./backend
 
-# 复制构建产物
-COPY --from=builder /app/backend/dist ./backend/dist
-
-# 复制根目录配置
+# 复制根目录配置文件
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 
-# 在生产阶段安装所有依赖（包括 reflect-metadata，确保被正确安装）
-WORKDIR /app/backend
-RUN pnpm install
-
 EXPOSE 3333
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "backend/dist/index.js"]
