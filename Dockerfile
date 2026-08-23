@@ -11,16 +11,15 @@ RUN pnpm install
 
 WORKDIR /app/backend
 
-# 安装必要的依赖：TypeScript 和缺失的运行时模块（它们自带类型）
-RUN pnpm add -D typescript cors@types cors htmlparser2 dom-serializer
+RUN pnpm install
 
-# 清理旧目录
+# 安装缺失的类型声明（cors 需要 @types/cors）
+RUN pnpm add -D @types/cors
+
 RUN node scripts/clean-dist.js 2>/dev/null || true
 
-# 强制编译：忽略类型错误，即使有错也生成 JS
 RUN ./node_modules/.bin/tsc --noEmitOnError false --skipLibCheck --strict false --noImplicitAny false
 
-# 复制 .json 资源到 dist
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
 
 # 生产阶段
