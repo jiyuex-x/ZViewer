@@ -32,17 +32,25 @@ RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 di
 # 生产阶段
 FROM node:20-alpine
 
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg && npm install -g pnpm
 
 WORKDIR /app
 
-# 复制整个 backend 目录（包含 dist 和 node_modules）
-COPY --from=builder /app/backend ./backend
+# 复制 backend 的源码和依赖文件（用于重新安装）
+COPY --from=builder /app/backend/package*.json ./backend/
+COPY --from=builder /app/backend/pnpm-lock.yaml ./backend/ 2>/dev/null || true
 
-# 复制根目录的配置文件（如果需要）
+# 复制构建产物（dist 目录）
+COPY --from=builder /app/backend/dist ./backend/dist
+
+# 复制根目录配置
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 
+# 在最终镜像中重新安装生产依赖（只安装生产依赖，dev 依赖不会安装）
+WORKDIR /app/backend
+RUN pnpm install --prod
+
 EXPOSE 3333
 
-CMD ["node", "backend/dist/index.js"]
+CMD ["node", "dist/index.js"]
