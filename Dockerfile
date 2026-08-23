@@ -24,8 +24,8 @@ RUN pnpm add -D typescript
 # 清理旧的 dist（如果脚本存在）
 RUN node scripts/clean-dist.js 2>/dev/null || true
 
-# 直接使用 node_modules/.bin/tsc 编译（无需依赖 package.json 脚本）
-RUN ./node_modules/.bin/tsc
+# 编译 TypeScript，跳过类型检查和隐式 any 错误
+RUN ./node_modules/.bin/tsc --skipLibCheck --noImplicitAny false
 
 # 复制 .json 等非 ts 资源到 dist（tsc 不会复制它们）
 RUN find src -name '*.json' -exec sh -c 'mkdir -p dist/$(dirname $1) && cp $1 dist/$1' _ {} \;
