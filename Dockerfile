@@ -19,7 +19,6 @@ RUN pnpm add reflect-metadata
 
 RUN node scripts/clean-dist.js 2>/dev/null || true
 
-# 关键：即使有类型错误也继续，并强制生成 JS
 RUN ./node_modules/.bin/tsc \
     --noEmitOnError false \
     --skipLibCheck \
@@ -37,13 +36,21 @@ RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
 
-# 复制整个 backend 目录（包含 dist 和 node_modules）
-COPY --from=builder /app/backend ./backend
+# 复制 package.json 以便安装依赖
+COPY --from=builder /app/backend/package*.json ./backend/
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
 
-# 复制根目录配置文件
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
+# 复制构建产物
+COPY --from=builder /app/backend/dist ./backend/dist
+
+# 安装生产依赖（包括 reflect-metadata）
+WORKDIR /app/backend
+RUN pnpm install --prod
+
+# 额外安装一次 reflect-metadata（确保存在）
+RUN pnpm add reflect-metadata
 
 EXPOSE 3333
 
-CMD ["node", "backend/dist/index.js"]
+CMD ["node", "dist/index.js"]
