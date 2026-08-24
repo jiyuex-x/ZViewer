@@ -81,7 +81,8 @@ export class Room {
   @UpdateDateColumn()
   updatedAt!: Date;
 
-  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  // 使用 timestamp 而非 datetime：兼容 PostgreSQL（Supabase）与 SQLite
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   lastAccessedAt!: Date;
 
   @OneToMany(() => Session, (session) => session.room)
