@@ -35,7 +35,8 @@ export class Session {
   @CreateDateColumn()
   startedAt!: Date;
 
-  @Column({ type: 'datetime', nullable: true })
+  // 使用 timestamp 而非 datetime：兼容 PostgreSQL（Supabase）与 SQLite
+  @Column({ type: 'timestamp', nullable: true })
   endedAt!: Date | null;
 
   @ManyToOne(() => Room, (room) => room.sessions, { onDelete: 'CASCADE' })
