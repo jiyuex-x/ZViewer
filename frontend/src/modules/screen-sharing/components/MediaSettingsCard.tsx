@@ -32,6 +32,10 @@ export function MediaSettingsCard(props: MediaSettingsCardProps): JSX.Element {
     onShareMicrophoneChange,
   } = props
 
+  // 高帧率推荐码率：1080p 下每帧约 0.3-0.5 Mbps，高帧率需更高码率
+  // 公式：frameRate * 0.4 Mbps，最低 2 Mbps
+  const recommendedBitrate = Math.max(2, Math.round(frameRate * 0.4))
+
   return (
     <Card className="w-full border-0 bg-transparent p-0 text-left shadow-none">
       <Space direction="vertical" className="w-full py-2" size="lg">
@@ -58,7 +62,7 @@ export function MediaSettingsCard(props: MediaSettingsCardProps): JSX.Element {
             </label>
             <InputNumber
               min={0.5}
-              max={50}
+              max={500}
               step={0.5}
               value={maxBitrateMbps}
               onChange={(value) =>
@@ -70,9 +74,8 @@ export function MediaSettingsCard(props: MediaSettingsCardProps): JSX.Element {
               type="secondary"
               className="m-0 mt-1 text-[10px] leading-tight"
             >
-              推荐 {frameRate}fps ≥ {Math.max(2, Math.round(frameRate * 0.267))}{' '}
-              Mbps
-              {frameRate >= 45 && '，码率不足将导致降帧'}
+              推荐 {frameRate}fps ≥ {recommendedBitrate} Mbps
+              {frameRate >= 60 && '，码率不足将导致降帧或画质下降'}
             </Paragraph>
           </div>
         </div>
