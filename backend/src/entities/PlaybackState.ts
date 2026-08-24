@@ -66,15 +66,16 @@ export class PlaybackState {
   isPlaying!: boolean;
 
   /** 当前播放进度（秒，最后一次更新时的值） */
-  @Column({ type: 'double' })
+  // 使用 float 而非 double：兼容 PostgreSQL（Supabase）与 SQLite
+  @Column({ type: 'float' })
   currentTime!: number;
 
   /** 播放倍速 */
-  @Column({ type: 'double', default: 1 })
+  @Column({ type: 'float', default: 1 })
   playbackRate!: number;
 
   /** 视频总时长（秒） */
-  @Column({ type: 'double', default: 0 })
+  @Column({ type: 'float', default: 0 })
   duration!: number;
 
   /** B站当前清晰度 qn（如 80=1080P、120=4K） */
