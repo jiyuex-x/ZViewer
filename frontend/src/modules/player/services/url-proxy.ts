@@ -16,6 +16,7 @@
  * 且只有 B站 一种代理场景。集中到本模块后，引擎只需调用 `resolveProxyUrl(url, headers, format)`，
  * 策略变更只改本文件。
  */
+import { getApiUrl } from '../../../lib/api'
 
 /**
  * 判断 URL 是否为 B站 CDN 媒体地址。
@@ -118,10 +119,11 @@ export function appendAuthToken(url: string): string {
 }
 
 /**
- * 将 URL 包装为后端代理 URL（相对路径）。
+ * 将 URL 包装为后端代理 URL（绝对路径，使用 getApiUrl() 确保发到正确后端）。
  * 后端代理会自动添加 Referer/User-Agent 头绕过防盗链，并透传 Range 请求支持断点续传。
  *
- * 使用相对路径确保 video 标签的请求通过 Nginx 代理转发到后端（同域请求携带 cookie）。
+ * 使用 getApiUrl() 构建绝对路径：前端部署在 Vercel、后端部署在 Railway 等分离架构下，
+ * 相对路径会发到 Vercel 导致 404，必须显式指定后端地址。
  *
  * 认证：hls.js 等场景无法设置 Authorization header，因此将 access token
  * 附加到查询参数中，后端 extractAccessToken 会优先从查询参数读取。
@@ -129,7 +131,8 @@ export function appendAuthToken(url: string): string {
 export function buildProxyUrl(url: string): string {
   const token = getStoredToken()
   const tokenParam = token ? `&token=${encodeURIComponent(token)}` : ''
-  return `/api/stream/proxy?url=${encodeURIComponent(url)}${tokenParam}`
+  const apiUrl = getApiUrl()
+  return `${apiUrl}/api/stream/proxy?url=${encodeURIComponent(url)}${tokenParam}`
 }
 
 /**
