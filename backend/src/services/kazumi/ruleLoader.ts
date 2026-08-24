@@ -1,22 +1,21 @@
 /**
  * Kazumi 独立模块 — 规则获取与 provider 构建
  *
- * 从 GitHub（经 CDN 代理）或自定义 URL 获取 Kazumi 规则 JSON，
+ * 从 GitHub 或自定义 URL 获取 Kazumi 规则 JSON，
  * 解析并构建 provider 实例。
  */
 
 import type { KazumiRule, KazumiSourceProvider } from './types';
 import { createKazumiProvider } from './provider';
-import { proxyGitHubUrl } from '../../utils/githubCdn';
 import { fetchText } from '../anisubs/httpClient';
 
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-/** 获取 Kazumi 规则 JSON（经 PowerShell fallback 绕过 TLS 拦截） */
+/** 获取 Kazumi 规则 JSON */
 export async function fetchKazumiRule(url: string): Promise<KazumiRule> {
-  const proxiedUrl = proxyGitHubUrl(url);
-  const result = await fetchText(proxiedUrl, {
+  // 直接请求原始 URL，不使用失效的 CDN 代理
+  const result = await fetchText(url, {
     headers: {
       'User-Agent': DEFAULT_USER_AGENT,
       Accept: 'application/json',
@@ -24,7 +23,7 @@ export async function fetchKazumiRule(url: string): Promise<KazumiRule> {
   });
   if (!result.ok) {
     throw new Error(
-      `获取规则失败 [${result.status}]: ${proxiedUrl}${result.error ? ` (${result.error})` : ''}`,
+      `获取规则失败 [${result.status}]: ${url}${result.error ? ` (${result.error})` : ''}`,
     );
   }
   let data: KazumiRule;
