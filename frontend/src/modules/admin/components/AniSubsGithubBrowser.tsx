@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/Button'
 import { Text, Paragraph } from '@/components/ui/Typography'
 import { message } from '@/components/ui/message'
 import { cn } from '@/lib/utils'
-import { proxyGitHubUrl } from '@/utils/githubCdn'
 
 interface GithubContentItem {
   name: string
@@ -112,9 +111,8 @@ export function AniSubsGithubBrowser({
       setError('')
       try {
         const apiPath = path ? `/${encodeURIComponent(path)}` : ''
-        const url = proxyGitHubUrl(
-          `https://api.github.com/repos/${info.owner}/${info.repo}/contents${apiPath}?ref=${info.branch}`
-        )
+        // 直接请求 GitHub API，不使用失效的 CDN 代理
+        const url = `https://api.github.com/repos/${info.owner}/${info.repo}/contents${apiPath}?ref=${info.branch}`
         const res = await fetch(url, {
           headers: {
             Accept: 'application/vnd.github+json',
@@ -148,10 +146,10 @@ export function AniSubsGithubBrowser({
 
   const handleAddFile = (item: GithubContentItem) => {
     if (!parsed) return
-    const rawUrl = proxyGitHubUrl(
+    // 直接使用 raw URL，不使用失效的 CDN 代理
+    const rawUrl =
       item.download_url ||
-        buildRawUrl(parsed.owner, parsed.repo, parsed.branch, item.path)
-    )
+      buildRawUrl(parsed.owner, parsed.repo, parsed.branch, item.path)
     if (existingUrls.includes(rawUrl)) {
       message.info('该订阅地址已存在')
       return
@@ -169,13 +167,12 @@ export function AniSubsGithubBrowser({
       message.info('当前目录没有 JSON 文件')
       return
     }
+    // 直接使用 raw URL，不使用失效的 CDN 代理
     const newUrls = jsonFiles
       .map((item) =>
-        proxyGitHubUrl(
-          item.download_url
-            ? item.download_url
-            : buildRawUrl(parsed.owner, parsed.repo, parsed.branch, item.path)
-        )
+        item.download_url
+          ? item.download_url
+          : buildRawUrl(parsed.owner, parsed.repo, parsed.branch, item.path)
       )
       .filter((url) => !existingUrls.includes(url))
     if (newUrls.length === 0) {
