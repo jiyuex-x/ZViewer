@@ -38,7 +38,8 @@ export class DanmakuTrack {
   items!: string;
 
   /** 时间偏移（秒） */
-  @Column({ type: 'double', default: 0 })
+  // 使用 float 而非 double：兼容 PostgreSQL（Supabase）与 SQLite
+  @Column({ type: 'float', default: 0 })
   offset!: number;
 
   /** 是否暂时隐藏 */
