@@ -271,29 +271,11 @@ async function fallbackToMp4(
   if (mp4PlayUrl?.format === 'mp4' && mp4PlayUrl.durl?.[0]?.url) {
     const rawUrl = mp4PlayUrl.durl[0].url;
     const httpsUrl = upgradeBilibiliUrlToHttps(rawUrl);
-    // skipCdnCheck=true 时直接使用 baseUrl，避免 HEAD 探测延迟（下载场景）
-    if (skipCdnCheck) {
-      return {
-        videoUrl: httpsUrl,
-        currentQn: mp4PlayUrl.currentQn,
-        acceptQuality: mp4PlayUrl.acceptQuality,
-      };
-    }
-    const mp4Url = await findReachableMediaUrl({
-      baseUrl: rawUrl,
-    });
-    if (mp4Url) {
-      return { videoUrl: mp4Url, currentQn: mp4PlayUrl.currentQn, acceptQuality: mp4PlayUrl.acceptQuality };
-    }
-    // HEAD 检测全部失败时回退到原始 URL（升级 HTTPS）。
-    // 原因：B站 platform=html5 返回的 MP4 直链设计上是无防盗链的，浏览器可直接播放。
-    // 某些 B站 CDN 对 HEAD 方法返回 403（但对 GET 请求正常），
-    // 此时不应拒绝解析，而应让浏览器直接尝试播放原始 URL。
-    // 若 URL 真的不可达，浏览器播放时会显示错误，但这比直接拒绝解析更合理。
-    console.warn(
-      '[bilibili-mp4] HEAD 检测全部失败，回退到原始 URL:',
-      httpsUrl,
-    );
+    // MP4 直链（platform=html5）无防盗链，浏览器可直接访问。
+    // 跳过服务器端 CDN 健康检查：服务器 IP 与用户浏览器 IP 不同，
+    // HEAD 探测结果不可靠，可能选择用户不可达的 CDN 节点导致黑屏。
+    // 直接返回升级 HTTPS 后的原始 URL，由浏览器选择最优 CDN 节点。
+    // skipCdnCheck 参数保留用于下载场景（语义一致：均跳过 HEAD 探测）。
     return {
       videoUrl: httpsUrl,
       currentQn: mp4PlayUrl.currentQn,
@@ -377,7 +359,7 @@ export async function resolveBilibiliVideo(
   const requestedQn = qn ?? defaultQn;
 
   // preferMp4 优先路径：直接请求 MP4 单流（fnval=1 + platform=html5），浏览器原生播放无需 MSE
-  // MP4 模式最高支持 720P(qn=64)，失败时不再回退 DASH，避免用户明确选择 MP4 后仍被切换到 DASH
+  // MP4 模式最高支持 720P(qn=64)，失败时自动回退 DASH（番剧/会员视频常见不支持 MP4）
   if (preferMp4) {
     emit('cdn', '正在获取 MP4 直链（直连模式）...');
     const mp4 = await fallbackToMp4(
@@ -406,10 +388,11 @@ export async function resolveBilibiliVideo(
         currentPage,
       };
     }
-    throw new ResolveError(
-      '该视频不支持 MP4 直链播放，请切换到 DASH 高清模式',
-      'MP4_NOT_AVAILABLE',
-    );
+    // MP4 不支持时自动回退到 DASH 模式（番剧/会员视频常见）。
+    // 不再直接抛错，避免用户看到"无法解析播放地址"。
+    // 代码继续执行下方的 DASH 路径（forceDash 检查 + 默认 DASH 路径）。
+    console.warn('[bilibili-resolver] MP4 直链不可用，自动回退 DASH 模式');
+    emit('fallback', 'MP4 不支持，切换到 DASH 高清模式...');
   }
 
   // 播放地址（使用 effectiveCid 对应的分集 cid 请求 playurl）
