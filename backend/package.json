@@ -36,12 +36,13 @@
     "nanoid": "^5.1.16",
     "node-media-server": "^4.2.8",
     "opencc-js": "^1.0.5",
+    "pg": "^8.13.1",
     "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",
     "socket.io": "^4.8.3",
     "typeorm": "^0.3.30",
     "webdav-client": "^1.4.3",
-    "xpath": "^0.0.34"
+    "xpath": "0.0.34"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
