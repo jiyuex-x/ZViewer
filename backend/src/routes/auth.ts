@@ -30,6 +30,17 @@ const router = Router();
 const userRepository = () => AppDataSource.getRepository(User);
 
 /**
+ * sqljs 专用：触发 autoSave 将内存中的数据库写入磁盘。
+ * PostgreSQL 模式下 driver.autoSave 不存在，用可选链安全跳过。
+ */
+async function safeAutoSave(): Promise<void> {
+  const driver = AppDataSource.driver as unknown as { autoSave?: () => Promise<void> };
+  if (typeof driver.autoSave === 'function') {
+    await driver.autoSave().catch(() => {});
+  }
+}
+
+/**
  * 密码强度软提示（不阻断注册/改密，仅返回建议）。
  * 评分维度：长度 ≥8、含小写、含大写、含数字、含特殊字符。
  */
@@ -132,8 +143,7 @@ router.post(
         status: isOpen ? 'active' : 'pending',
       });
       await userRepository().save(user);
-      // 显式触发 autoSave，确保注册用户立即写入文件
-      await (AppDataSource.driver as import('typeorm/driver/sqljs/SqljsDriver').SqljsDriver).autoSave().catch(() => {});
+      await safeAutoSave();
 
       if (isOpen) {
         const tokens = generateTokens(user.id, user.role, user.username);
@@ -430,8 +440,7 @@ router.patch(
 
       user.passwordHash = await bcrypt.hash(newPassword, 10);
       await userRepo.save(user);
-      // 显式触发 autoSave，确保密码修改立即写入文件
-      await (AppDataSource.driver as import('typeorm/driver/sqljs/SqljsDriver').SqljsDriver).autoSave().catch(() => {});
+      await safeAutoSave();
       // V5：改密后使此前签发的所有 token 立即失效（含被盗的 refresh token）。
       // 客户端下次请求会收到 401，凭新密码重新登录获取新 token。
       await invalidateUserTokens(user.id);
@@ -490,8 +499,7 @@ router.patch(
 
       user.username = trimmedUsername;
       await userRepo.save(user);
-      // 显式触发 autoSave，确保用户名修改立即写入文件
-      await (AppDataSource.driver as import('typeorm/driver/sqljs/SqljsDriver').SqljsDriver).autoSave().catch(() => {});
+      await safeAutoSave();
       writeAuditLog({
         actorUserId: user.id,
         actorUsername: user.username,
