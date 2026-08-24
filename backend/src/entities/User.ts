@@ -38,7 +38,8 @@ export class User {
    * 修改密码时更新为当前时间——使改密前签发的所有旧 token（含被盗的
    * refresh token）全部失效。null 表示未设置过失效要求。
    */
-  @Column({ type: 'datetime', nullable: true })
+  // 使用 timestamp 而非 datetime：兼容 PostgreSQL（Supabase）与 SQLite
+  @Column({ type: 'timestamp', nullable: true })
   tokenInvalidBefore!: Date | null;
 
   @CreateDateColumn()
