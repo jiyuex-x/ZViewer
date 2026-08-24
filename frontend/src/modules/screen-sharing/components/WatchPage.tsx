@@ -51,6 +51,10 @@ function WatchPage() {
   const listHasPassword = navState?.hasPassword === true
   const listRoomName = navState?.name ?? null
 
+  // 是否自动加入：除了"从房间列表进入的有密码房间"之外，都自动加入
+  // 直接访问 URL / 分享链接 / 从房间列表进入的无密码房间，都应自动加入
+  const shouldAutoJoin = !(fromList && listHasPassword)
+
   const [isWebFullscreen, setIsWebFullscreen] = useState(false)
 
   // 1. 加入房间 hook
@@ -60,7 +64,7 @@ function WatchPage() {
     socket,
     roomId,
     connected,
-    autoJoin: !(fromList && listHasPassword),
+    autoJoin: shouldAutoJoin,
     onRoomClosed: (data) => {
       message.warning(`房间 ${data.roomId} 已关闭`)
       setTimeout(() => navigate('/room', { replace: true }), 1500)
@@ -130,19 +134,21 @@ function WatchPage() {
     return <WebrtcWatchPage roomId={roomId ?? ''} />
   }
 
-  // 4. 未加入或加入失败：根据入口来源渲染不同 UI
-  // - 从房间列表进入的无密码房间：显示加载动画（useJoinRoom 正在自动加入）
-  // - 从房间列表进入的有密码房间：显示密码输入框（隐藏房间号）
-  // - 其他情况（直接访问 URL）：显示完整的 JoinRoomForm
+  // 4. 自动加入中：显示加载动画
+  // 修复：只要 shouldAutoJoin 为 true（即不是从房间列表进入的有密码房间），
+  // 且 joinStatus 为 idle/joining，就显示加载动画，而不是直接显示加入房间表单。
+  // 这样直接访问分享链接 /room/:id 时，用户会看到"正在加入房间..."而不是空白的加入表单。
   if (
-    fromList &&
-    !listHasPassword &&
+    shouldAutoJoin &&
     (joinStatus === 'idle' || joinStatus === 'joining')
   ) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6">
         <Spinner tip="正在加入房间..." size={48} />
         {listRoomName && <Text type="secondary">正在加入：{listRoomName}</Text>}
+        {roomId && !listRoomName && (
+          <Text type="secondary">房间号：{roomId}</Text>
+        )}
       </div>
     )
   }
