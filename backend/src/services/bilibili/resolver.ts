@@ -11,7 +11,6 @@
  * - 视频信息短期缓存，重复解析同一 BV 号时跳过 nav/view 调用。
  * - CDN 健康检查使用 race 模式，先返回的可达 URL 立即采用。
  */
-
 import { getVideoInfo, type BilibiliVideoInfo } from './video';
 import {
   getPlayUrl,
@@ -64,7 +63,7 @@ function narrowAcceptQualityForMp4(
 }
 
 export interface ResolveOptions {
-  /** 原始输入：BV 号 / av 号 / 完整 URL。 */
+  /** 原始输入：BV 号 / av 号 / 完整 URL / b23.tv 短链接。 */
   url: string;
   /** 当前用户 ID，用于读取 B站 Cookie。 */
   userId?: string;
@@ -154,6 +153,39 @@ export class ResolveError extends Error {
     super(message);
     this.name = 'ResolveError';
     this.code = code;
+  }
+}
+
+/**
+ * 解析 B站短链接（b23.tv），返回重定向后的完整 URL。
+ *
+ * B站短链接格式：https://b23.tv/xxxxxx
+ * 短链接会 302 重定向到完整的 B站视频链接（如 https://www.bilibili.com/video/BVxxxxxx）。
+ * 本函数跟随重定向，返回最终 URL，供后续 extractBvid 提取 BV 号。
+ *
+ * 如果输入不是短链接，原样返回。
+ * 请求失败时也原样返回，由后续 extractBvid 尝试直接提取（兜底）。
+ */
+async function resolveBilibiliShortUrl(url: string): Promise<string> {
+  if (!/b23\.tv/i.test(url)) return url;
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+    // fetch 会自动跟随重定向，最终 URL 在 res.url 中
+    if (res.url && res.url !== url) {
+      console.log('[bilibili-resolver] 短链接解析:', url.slice(0, 50), '→', res.url.slice(0, 80));
+      return res.url;
+    }
+    return url;
+  } catch (err) {
+    console.warn('[bilibili-resolver] 短链接解析失败，使用原 URL:', err instanceof Error ? err.message : String(err));
+    return url;
   }
 }
 
@@ -293,7 +325,9 @@ export async function resolveBilibiliVideo(
 ): Promise<ResolveResult> {
   const { url, cookie, qn, codec, onProgress, preferMp4, page, cid, skipCdnCheck, forceDash } = opts;
 
-  const bvid = extractBvid(url);
+  // 先解析 B站短链接（b23.tv），获取重定向后的完整 URL，再提取 BV 号
+  const resolvedUrl = await resolveBilibiliShortUrl(url);
+  const bvid = extractBvid(resolvedUrl);
   if (!bvid) {
     throw new ResolveError('无法解析 B站 BV 号', 'INVALID_INPUT');
   }
@@ -437,7 +471,6 @@ export async function resolveBilibiliVideo(
   if (effectiveQn && !acceptQuality.some((q) => q.id === effectiveQn)) {
     effectiveQn = acceptQuality[0]?.id ?? playUrl.currentQn;
   }
-
   if (effectiveQn && effectiveQn !== playUrl.currentQn) {
     emit('quality', '正在匹配可用清晰度...');
     try {
@@ -465,7 +498,6 @@ export async function resolveBilibiliVideo(
   // DASH 路径：选择可达视频/音频 URL
   if (playUrl.format === 'dash' && playUrl.bestVideo) {
     emit('cdn', '正在选择可用 CDN...');
-
     // skipCdnCheck=true 时直接使用 baseUrl，避免 HEAD 探测延迟（下载场景）
     // 下载失败时由调用方重试 backupUrl
     let videoUrl: string | null;
@@ -489,7 +521,6 @@ export async function resolveBilibiliVideo(
           : Promise.resolve(null),
       ]);
     }
-
     if (!videoUrl) {
       if (forceDash) {
         // 强制 DASH 模式：禁用 MP4 降级，直接报错
@@ -531,7 +562,6 @@ export async function resolveBilibiliVideo(
         'CDN_UNREACHABLE',
       );
     }
-
     return {
       title: info.title,
       duration: getCurrentPageDuration(info, effectiveCid),
