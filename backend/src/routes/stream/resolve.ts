@@ -1,12 +1,3 @@
-/**
- * B站 视频解析与弹幕路由（需登录态，由父路由统一 authenticateToken）。
- *
- *   GET /resolve-bilibili   解析 B站 视频播放地址（NDJSON 流式返回进度）
- *   GET /bilibili/danmaku   获取 B站 弹幕
- *
- * v2 重构：NDJSON 流式响应的头部设置 / 写入 / flush 收敛为 NdjsonWriter，
- * 路由本体只保留参数校验与业务流程。
- */
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../../middleware/auth';
 import { getVideoInfo } from '../../services/bilibili/video';
@@ -39,22 +30,9 @@ interface ResolveProgressMessage {
   vipStatus?: number;
   currentQn?: number;
   acceptQuality?: { id: number; label: string; resolution?: string }[];
-  /** 多 P 视频的分集列表（单 P 视频为 undefined） */
   pages?: ResolvePageInfo[];
-  /** 当前播放的分集序号（从 1 开始） */
   currentPage?: number;
 }
-/**
- * NDJSON 流式响应写入器。
- *
- * - Content-Type: application/x-ndjson，逐行写入 JSON；
- * - X-Accel-Buffering: no：禁用 nginx 缓冲，实时推送解析进度；
- * - 每次写入后尝试 flush（compression 中间件存在时生效）。
- *
- * 注意：不显式设置 Connection / Transfer-Encoding 等 hop-by-hop 头部。
- * 这些头部由 HTTP 服务器自动管理，显式设置会导致经 frontend-server 代理时
- * 产生头部冲突，使浏览器无法正确解析 NDJSON 流式响应（MP4 直连功能失效）。
- */
 class NdjsonWriter {
   constructor(private readonly res: Response) {
     res.setHeader('Content-Type', 'application/x-ndjson');
@@ -68,7 +46,6 @@ class NdjsonWriter {
       flushable.flush();
     }
   }
-  /** 发送错误消息并结束响应 */
   fail(message: string, code?: string): void {
     this.send({ success: false, status: 'error', message, code });
     this.res.end();
@@ -100,14 +77,10 @@ router.get('/resolve-bilibili', async (req: AuthenticatedRequest, res) => {
       : undefined;
   const preferMp4Param = req.query.preferMp4 === 'true' || req.query.preferMp4 === '1';
   const forceDashParam = req.query.forceDash === 'true' || req.query.forceDash === '1';
-  // 服务器端 DASH 禁用：强制 preferMp4 并禁止 forceDash
-  // 注意：仅影响服务器端解析，不影响 CLI 代理的 DASH 模式（CLI 走独立路由 /api/cli/resolve）
   const settings = await getSystemSettings();
   const dashDisabled = settings.dashDisabled;
   const preferMp4 = dashDisabled || preferMp4Param;
   const forceDash = !dashDisabled && forceDashParam;
-  // page 参数：指定播放分集（P），从 1 开始
-  // 多 P 视频每个分集有独立的 cid，必须用对应 cid 请求 playurl 才能获取正确的播放地址
   const page =
     typeof req.query.page === 'string' && req.query.page.trim()
       ? Number(req.query.page.trim())
