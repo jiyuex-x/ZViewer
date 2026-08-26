@@ -6,7 +6,8 @@
  * 由本模块根据 URL 特征决定最终地址。
  *
  * 当前策略：
- * - B站 所有媒体流（DASH m4s / MP4 直链）：走服务器代理（防盗链 + CORS + Referer 检查）
+ * - B站 DASH m4s 流：走服务器代理（m4s 有防盗链 + 无 CORS，浏览器无法绕过）
+ * - B站 MP4 直链：直连（速度快、省流量，不回退代理）
  * - 带防盗链 headers 的源：走服务器代理（浏览器无法设置 forbidden header）
  * - 其他源（webdav / ftp / 用户直链 / 服务器本地文件 / blob / data）：直连
  *   → 服务器零流量，仅承载信令与元数据
@@ -22,10 +23,9 @@ import { getApiUrl } from '../../../lib/api'
  *
  * 覆盖 B站 各类 CDN 域名：官方 bilivideo、P2P/mcdn、第三方边缘节点、akamaized 海外节点等。
  *
- * 注意：B站 URL 是否需要代理：
+ * 注意：B站 URL 是否需要代理取决于请求方式：
  * - DASH m4s 流：有防盗链 + 无 CORS，必须走服务器代理
- * - MP4 直链（platform=html5 接口）：部分视频也有防盗链/Referer 检查/CORS 限制，
- *   统一走服务器代理确保播放稳定性
+ * - MP4 直链（platform=html5 接口）：直连，不回退代理
  * 调用方需结合 source.format 判断，本函数仅判断域名。
  */
 export function isBilibiliMediaUrl(url: string): boolean {
@@ -137,12 +137,11 @@ export function buildProxyUrl(url: string): string {
  * | 本站 API / blob / data | 直连                  | 直连                |
  * | 相对路径（/api/...）     | 直连                  | 直连                |
  * | 带防盗链 headers        | 服务器代理             | 服务器代理           |
- * | B站 CDN URL            | 服务器代理（部分MP4也有防盗链）| 服务器代理（m4s 有防盗链）|
+ * | B站 CDN URL            | 直连（不回退代理）      | 服务器代理（m4s 有防盗链）|
  * | 其他跨域 URL            | 直连                  | 直连                |
  *
- * 注意：B站 MP4 直链（platform=html5）原本认为无防盗链可直连，
- * 但实际部分视频存在 Referer 检查/CORS 限制，直连会黑屏且 <video> 标签
- * 不一定触发 error 事件导致回退逻辑不可靠，因此统一走服务器代理。
+ * 注意：B站 MP4 直连播放，不耗服务器流量。
+ * 少数存在防盗链/Referer 检查/CORS 限制的视频，直连会失败并报错（不回退代理）。
  *
  * @param url 原始视频流 URL
  * @param headers 可选的防盗链 headers（由后端 resolve 返回）
@@ -155,14 +154,18 @@ export function resolveProxyUrl(
   format?: string
 ): string {
   if (!url) return url
+
   // 本站 URL / blob / data 协议：永不代理。
   // /api/ 路径需附加 token：HTTP 环境下无 auth cookie，
   // 媒体标签无法设置 Authorization header，必须通过查询参数认证。
   if (isLocalUrl(url)) return appendAuthToken(url)
+
   // 相对路径（/api/webdav/...）：自动走本站后端，同样附加 token
   if (isRelativeUrl(url)) return appendAuthToken(url)
+
   const hasHeaders = !!(headers && Object.keys(headers).length > 0)
   const isBili = isBilibiliMediaUrl(url)
+
   // 带防盗链 headers：浏览器无法设置 forbidden header，必须走服务器代理
   if (hasHeaders) {
     console.warn('[url-proxy] 走服务器代理(headers):', {
@@ -172,16 +175,24 @@ export function resolveProxyUrl(
     })
     return buildProxyUrl(url)
   }
-  // B站所有媒体流（DASH m4s / MP4 直链）均走服务器代理：
-  // - DASH m4s：有防盗链 + 无 CORS，必须代理
-  // - MP4 直链（platform=html5）：部分视频也有防盗链/Referer 检查/CORS 限制，
-  //   直连会导致黑屏（<video> 标签遇到 403 时不一定触发 error 事件，回退逻辑不可靠），
-  //   统一走服务器代理确保播放稳定性。
-  // 注意：B站封面图（i0.hdslb.com/bfs/archive/...jpg）不走此逻辑，
-  // 因为封面图通过 <img> 标签加载，不受防盗链影响，且 resolveProxyUrl 仅用于媒体流。
+
+  // B站 DASH m4s 流：有防盗链 + 无 CORS，必须走服务器代理
+  // B站 MP4 直链（platform=html5）：直连，不回退代理
   if (isBili) {
-    return buildProxyUrl(url)
+    const isDashStream =
+      format === 'dash' ||
+      format === 'm4s' ||
+      (!format &&
+        (url.toLowerCase().includes('.m4s') ||
+          url.toLowerCase().includes('/dash/')))
+
+    if (isDashStream) {
+      return buildProxyUrl(url)
+    }
+    // MP4 直链：返回原 URL，直连播放
+    return url
   }
+
   // 其他跨域 URL：直连源站，服务器零流量
   return url
 }

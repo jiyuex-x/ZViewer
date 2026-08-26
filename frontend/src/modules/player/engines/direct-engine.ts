@@ -6,8 +6,7 @@
  *
  * 代理策略由 url-proxy.ts 统一控制（分离式架构）：
  * - B站 DASH m4s / 带防盗链 headers 的源走服务器代理
- * - 其他源（B站 MP4 直链 / webdav / ftp / 用户直链）直连
- * - 直连失败时（跨域防盗链 / CORS / 403），自动回退到服务器代理重试
+ * - 其他源（B站 MP4 直连 / webdav / ftp / 用户直链）直连，不回退代理
  *
  * attach 在 metadata 就绪后 resolve，cleanup 无需额外操作
  * （video 元素本身由调用方管理）。
@@ -18,26 +17,28 @@
  */
 import type { PlayerEngine, PlayerSource, EngineAttachResult } from '../types'
 import { resetVideoElement } from '../utils'
-import {
-  resolveProxyUrl,
-  buildProxyUrl,
-  isLocalUrl,
-  isRelativeUrl,
-  isCliProxyUrl,
-} from '../services/url-proxy'
-
+import { resolveProxyUrl } from '../services/url-proxy'
 /**
- * 等待 video metadata 就绪或 error 事件。
+ * 等待 video metadata 就绪或 error 事件，支持超时。
  *
  * 与 utils.waitForMetadata 不同，本函数同时监听 error 事件，
- * 加载失败时 reject 而非永久 pending，使调用方可捕获并回退重试。
+ * 加载失败时 reject 而非永久 pending。
+ *
+ * 超时机制：部分视频加载失败时（如防盗链 403、CORS 限制）不会触发 error 事件，
+ * 只是静默黑屏/卡住，导致永久 pending。设置超时后，超时也视为失败，
+ * 直接报错（不回退代理）。
+ *
+ * @param video video 元素
+ * @param timeoutMs 超时毫秒数，默认 6000（6 秒）。传 0 或负数表示不超时。
  */
-function waitForMetadataOrError(video: HTMLVideoElement): Promise<void> {
+function waitForMetadataOrError(video: HTMLVideoElement, timeoutMs = 6000): Promise<void> {
   if (video.readyState >= 1) return Promise.resolve()
   return new Promise((resolve, reject) => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     const cleanup = () => {
       video.removeEventListener('loadedmetadata', onLoaded)
       video.removeEventListener('error', onError)
+      if (timeoutId) clearTimeout(timeoutId)
     }
     const onLoaded = () => {
       cleanup()
@@ -50,27 +51,16 @@ function waitForMetadataOrError(video: HTMLVideoElement): Promise<void> {
     }
     video.addEventListener('loadedmetadata', onLoaded, { once: true })
     video.addEventListener('error', onError, { once: true })
+    if (timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        cleanup()
+        reject(new Error(`video load timeout after ${timeoutMs}ms`))
+      }, timeoutMs)
+    }
   })
 }
-
-/**
- * 判断 URL 是否可以回退到服务器代理。
- *
- * 仅对跨域 URL 有效：
- * - 本站 URL / 相对路径 / blob / data：无需代理
- * - CLI 代理 URL：已是本地代理
- * - 已包装的代理 URL：避免重复代理
- */
-function canFallbackToProxy(url: string): boolean {
-  if (!url) return false
-  if (isLocalUrl(url) || isRelativeUrl(url) || isCliProxyUrl(url)) return false
-  if (url.includes('/api/stream/proxy')) return false
-  return true
-}
-
 export const directEngine: PlayerEngine = {
   type: 'direct',
-
   async attach(
     video: HTMLVideoElement,
     source: PlayerSource
@@ -78,7 +68,6 @@ export const directEngine: PlayerEngine = {
     resetVideoElement(video)
     // 统一代理策略：由 url-proxy.ts 根据 URL 特征与源格式决定
     const targetUrl = resolveProxyUrl(source.url, source.headers, source.format)
-
     // 先发 HEAD 请求尝试获取 X-Content-Duration（转码流场景）。
     // HEAD 与正式加载并行执行且带 5s 超时：慢代理/挂起的 HEAD 不推迟首帧，
     // 失败或超时静默跳过（转码流时长回退由 X-Content-Duration header 探测路径兜底）。
@@ -100,25 +89,15 @@ export const directEngine: PlayerEngine = {
         // HEAD 请求失败（CORS 限制 / 超时），静默跳过
       }
     })()
-
-    // 尝试加载视频：直连失败时回退到服务器代理（绕过跨域防盗链 / CORS）
-    const fallback = canFallbackToProxy(targetUrl)
-
-    const loadOnce = async (url: string): Promise<void> => {
+    // 直连模式：不回退代理，失败直接报错（B站 MP4 必须直连，不耗服务器流量）
+    // 超时设为 15 秒，给网络较慢的视频足够加载时间
+    const loadOnce = async (url: string, timeoutMs: number): Promise<void> => {
       video.src = url
       video.load()
-      await waitForMetadataOrError(video)
+      await waitForMetadataOrError(video, timeoutMs)
     }
 
-    try {
-      await loadOnce(targetUrl)
-    } catch (err) {
-      if (!fallback) throw err
-      console.warn('[direct-engine] 直连失败，回退到服务器代理:', err)
-      resetVideoElement(video)
-      const proxyUrl = buildProxyUrl(source.url)
-      await loadOnce(proxyUrl)
-    }
+    await loadOnce(targetUrl, 15000)
     // 等待 HEAD 结算（超时上限 5s，不显著阻塞；结果仅写 dataset）
     await headPromise
 
