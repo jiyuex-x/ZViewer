@@ -7,7 +7,6 @@
  * v2 重构：NDJSON 流式响应的头部设置 / 写入 / flush 收敛为 NdjsonWriter，
  * 路由本体只保留参数校验与业务流程。
  */
-
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../../middleware/auth';
 import { getVideoInfo } from '../../services/bilibili/video';
@@ -21,9 +20,7 @@ import {
 } from '../../services/bilibili/resolver';
 import { getUserCookie } from './helpers';
 import { getSystemSettings } from '../../services/system-settings';
-
 const router = Router();
-
 interface ResolveProgressMessage {
   success?: boolean;
   status: 'parsing' | 'done' | 'error';
@@ -47,7 +44,6 @@ interface ResolveProgressMessage {
   /** 当前播放的分集序号（从 1 开始） */
   currentPage?: number;
 }
-
 /**
  * NDJSON 流式响应写入器。
  *
@@ -65,7 +61,6 @@ class NdjsonWriter {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('X-Accel-Buffering', 'no');
   }
-
   send(payload: ResolveProgressMessage): void {
     this.res.write(JSON.stringify(payload) + '\n');
     const flushable = this.res as unknown as { flush?: () => void };
@@ -73,18 +68,15 @@ class NdjsonWriter {
       flushable.flush();
     }
   }
-
   /** 发送错误消息并结束响应 */
   fail(message: string, code?: string): void {
     this.send({ success: false, status: 'error', message, code });
     this.res.end();
   }
-
   end(): void {
     this.res.end();
   }
 }
-
 router.get('/resolve-bilibili', async (req: AuthenticatedRequest, res) => {
   const url = req.query.url;
   const userId = req.user?.userId;
@@ -92,47 +84,40 @@ router.get('/resolve-bilibili', async (req: AuthenticatedRequest, res) => {
     res.status(400).json({ success: false, message: '缺少视频链接' });
     return;
   }
-
   // 提前校验 BV 号，避免进入流式响应后才返回 400
-  if (!extractBvid(url)) {
+  // 短链接（b23.tv）需要先跟随重定向才能获取 BV 号，跳过提前校验，由 resolveBilibiliVideo 内部处理
+  if (!/b23\.tv/i.test(url) && !extractBvid(url)) {
     res.status(400).json({ success: false, message: '无法解析 B站 BV 号' });
     return;
   }
-
   const qn =
     typeof req.query.qn === 'string' && req.query.qn.trim()
       ? Number(req.query.qn.trim())
       : undefined;
-
   const codec =
     typeof req.query.codec === 'string' && req.query.codec.trim()
       ? req.query.codec.trim()
       : undefined;
-
   const preferMp4Param = req.query.preferMp4 === 'true' || req.query.preferMp4 === '1';
   const forceDashParam = req.query.forceDash === 'true' || req.query.forceDash === '1';
-
   // 服务器端 DASH 禁用：强制 preferMp4 并禁止 forceDash
   // 注意：仅影响服务器端解析，不影响 CLI 代理的 DASH 模式（CLI 走独立路由 /api/cli/resolve）
   const settings = await getSystemSettings();
   const dashDisabled = settings.dashDisabled;
   const preferMp4 = dashDisabled || preferMp4Param;
   const forceDash = !dashDisabled && forceDashParam;
-
   // page 参数：指定播放分集（P），从 1 开始
   // 多 P 视频每个分集有独立的 cid，必须用对应 cid 请求 playurl 才能获取正确的播放地址
   const page =
     typeof req.query.page === 'string' && req.query.page.trim()
       ? Number(req.query.page.trim())
       : undefined;
-
   const writer = new NdjsonWriter(res);
   const cookie = (await getUserCookie(userId)) || undefined;
   const resolveStartTime = Date.now();
   console.log(
     `[bilibili] resolve-bilibili start preferMp4=${preferMp4} forceDash=${forceDash} qn=${qn ?? 'auto'} cookie=${!!cookie} url=${url.slice(0, 60)}`,
   );
-
   try {
     const result = await resolveBilibiliVideo({
       url,
@@ -147,11 +132,9 @@ router.get('/resolve-bilibili', async (req: AuthenticatedRequest, res) => {
         writer.send({ status: msg.status, step: msg.step, message: msg.message });
       },
     });
-
     console.log(
       `[bilibili] resolve-bilibili done format=${result.format} qn=${result.currentQn} ${Date.now() - resolveStartTime}ms url=${url.slice(0, 60)}`,
     );
-
     writer.send({
       success: true,
       status: 'done',
@@ -177,13 +160,10 @@ router.get('/resolve-bilibili', async (req: AuthenticatedRequest, res) => {
     writer.fail(normalized.message, normalized.code);
   }
 });
-
 router.get('/bilibili/danmaku', async (req: AuthenticatedRequest, res) => {
   const cid = req.query.cid;
   const bvidRaw = req.query.bvid;
-
   let effectiveCid: number | undefined;
-
   if (typeof cid === 'string' && cid.trim()) {
     effectiveCid = Number(cid);
   } else if (typeof bvidRaw === 'string' && bvidRaw.trim()) {
@@ -208,12 +188,10 @@ router.get('/bilibili/danmaku', async (req: AuthenticatedRequest, res) => {
       return;
     }
   }
-
   if (!effectiveCid) {
     res.status(400).json({ success: false, message: '缺少 cid 或 bvid 参数' });
     return;
   }
-
   try {
     const danmaku = await getDanmaku(effectiveCid);
     res.json({ success: true, danmaku });
@@ -225,5 +203,4 @@ router.get('/bilibili/danmaku', async (req: AuthenticatedRequest, res) => {
     });
   }
 });
-
 export default router;
